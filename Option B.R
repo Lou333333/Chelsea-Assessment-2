@@ -70,6 +70,8 @@ summary(match_with_cap %>% select(starts_with("cap_")))
 
 
 
+####capaclityie combination is interesting here - could just do eveything sperately?
+
 
 ## Add Capabilities to Survival Data ====
 cat("\n========== ADDING CAPABILITIES TO SURVIVAL DATASET ==========\n")
