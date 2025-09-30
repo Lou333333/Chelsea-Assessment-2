@@ -1,0 +1,5 @@
+Model,AIC,Concordance
+Distance only,858.4,0.547
+Distance + HSR,858.2,0.557
+Multiple GPS,854.8,0.596
+Intensity categories,854,0.578

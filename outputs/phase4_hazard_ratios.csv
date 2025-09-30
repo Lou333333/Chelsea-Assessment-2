@@ -1,0 +1,5 @@
+Variable,HR,Lower_CI,Upper_CI,P_value
+distance,1,1,1,0.2853
+distance_over_21,1,0.998,1.001,0.7985
+distance_over_27,1.007,1.002,1.012,0.0089
+accel_decel_over_3_5,0.99,0.971,1.009,0.2972
