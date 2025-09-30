@@ -110,8 +110,9 @@ emboss_status <- emboss_data %>%
   count(status) %>% 
   mutate(percentage = round(n / sum(n) * 100, 1))
 
-print(emboss_status)
+
 valid_emboss <- emboss_data %>% filter(!is.na(value_num))
+
 
 
 ##Visulisations ====
@@ -179,35 +180,60 @@ print(p4)
 
 
 
-#Part 2 ====
-
-## Defining Intolernace ====
-# Purpose: Define what constitutes a "training load intolerance" event
-# Outcome: Binary event definition for survival analysis
-
-##should it be a 25 quan tile or should it be more like a 1std or 2 std o 3 std etc?
 
 
-#threshold cacluaiton - 25 quantile
-threshold_25 <- quantile(valid_emboss$value_num, 0.25)
-cat("25th percentile threshold:", round(threshold_25, 4), "\n") #=. -0.0582 # the cutoof for intolerance poor perfromance etc
 
-#intolerance indicator 
-emboss_events <- valid_emboss %>% 
+
+
+
+
+
+
+
+##PArt 2 ====
+
+######## i have now changed this to work with gps_emboss maybe that will be better? _ try out - i havent done that yet
+
+## Redefine Intolerance - SEVERE THRESHOLD ====
+cat("\n========== DEFINING SEVERE INTOLERANCE THRESHOLD ==========\n")
+
+# Compare different threshold options
+threshold_options <- tibble(
+  method = c("Below Baseline (0)", 
+             "10th Percentile", 
+             "25th Percentile",
+             "Mean - 1 SD"),
+  threshold_value = c(
+    0,
+    quantile(valid_emboss$value_num, 0.10),
+    quantile(valid_emboss$value_num, 0.25),
+    mean(valid_emboss$value_num) - sd(valid_emboss$value_num)
+  )
+)
+
+print(threshold_options)
+
+# Choose 25th percentile as SEVERE intolerance
+# (Bottom quartile = worst recovery days)
+threshold_severe <- quantile(valid_emboss$value_num, 0.25)
+
+cat("\nSelected Threshold (25th percentile):", round(threshold_severe, 4), "\n")
+cat("This captures the bottom 25% of recovery days\n\n")
+
+# Recreate intolerance events with severe threshold
+emboss_events_severe <- valid_emboss %>% 
   mutate(
-    intolerance_event = ifelse(value_num <= threshold_25, 1, 0)
+    intolerance_event = ifelse(value_num <= threshold_severe, 1, 0)
   )
 
-# Count events
-n_events <- sum(emboss_events$intolerance_event)
-event_rate <- mean(emboss_events$intolerance_event) * 100
+# Summary
+n_events_severe <- sum(emboss_events_severe$intolerance_event)
+event_rate_severe <- mean(emboss_events_severe$intolerance_event) * 100
 
-cat("Total intolerance events:", n_events, "\n")
-cat("Event rate:", round(event_rate, 1), "%\n\n")
+cat("Severe Intolerance Events:", n_events_severe, "\n")
+cat("Event rate:", round(event_rate_severe, 1), "%\n\n")
 
-#Summarise 
-
-emboss_events %>% 
+emboss_events_severe %>% 
   group_by(intolerance_event) %>% 
   summarise(
     n = n(),
@@ -218,255 +244,141 @@ emboss_events %>%
   ) %>% 
   print()
 
-
-##visualisaton of intolerance ====
-
-
-p_intolerance <- ggplot(emboss_events, aes(x = value_num, fill = factor(intolerance_event))) +
+# Visualize new threshold
+p_severe <- ggplot(emboss_events_severe, aes(x = value_num, fill = factor(intolerance_event))) +
   geom_histogram(bins = 30, alpha = 0.8, color = "white") +
-  geom_vline(xintercept = threshold_25, linetype = "dashed", 
-             color = "orange", size = 1.2) +
-  geom_vline(xintercept = 0, linetype = "dashed", 
-             color = "red", size = 0.8) +
+  geom_vline(xintercept = threshold_severe, linetype = "dashed", 
+             color = "red", size = 1.2) +
+  geom_vline(xintercept = 0, linetype = "dotted", 
+             color = "black", size = 0.8) +
+  annotate("text", x = threshold_severe - 0.05, y = Inf, 
+           label = "Severe Intolerance", 
+           vjust = 2, hjust = 1, color = "red", fontface = "bold") +
+  annotate("text", x = 0.02, y = Inf, 
+           label = "Baseline", 
+           vjust = 1, hjust = 0, color = "black", size = 3) +
   scale_fill_manual(
     values = c("0" = "steelblue", "1" = "coral"),
-    labels = c("Tolerant", "Intolerant"),
+    labels = c("Normal Recovery", "Severe Intolerance"),
     name = "Status"
   ) +
   theme_minimal() +
   theme(legend.position = "top") +
   labs(
-    title = "Definition of Training Load Intolerance Event",
-    subtitle = paste0("N = ", nrow(emboss_events), " | Events = ", 
-                      n_events, " (", round(event_rate, 1), "%)"),
+    title = "Severe Training Load Intolerance Definition",
+    subtitle = paste0("Threshold = ", round(threshold_severe, 3), 
+                      " (25th percentile) | N = ", nrow(emboss_events_severe), 
+                      " | Events = ", n_events_severe, " (", round(event_rate_severe, 1), "%)"),
     x = "EMBOSS Recovery Score",
     y = "Frequency",
-    caption = "Orange line = intolerance threshold (25th percentile)"
+    caption = "Severe intolerance = bottom 25% of recovery days"
   )
 
-print(p_intolerance)
+print(p_severe)
 
 
-#export as intolerance days csv 
+## Recreate Survival Dataset with Severe Threshold ====
 
-intolerance_export <- emboss_events %>% 
+cat("\n========== RECREATING SURVIVAL DATASET (SEVERE INTOLERANCE) ==========\n")
+
+# Prepare EMBOSS data with severe threshold
+emboss_for_survival_severe <- emboss_events_severe %>% 
   select(sessionDate, value_num, intolerance_event) %>% 
-  rename(emboss_score = value_num)
-
-
-dir.create("outputs", showWarnings = FALSE)
-write_csv(intolerance_export, "outputs/intolerance_events.csv")
+  rename(date = sessionDate)
 
 
 
 
-# Part 3 ====
-##Survival Analysis ==== 
-##### am i getting rid of days before and after by simplfying its 1 and 0s? # i am - oi need to have minus and + days etc
+###error occuring here now 
 
+# Use same function, just with new emboss data
+cat("Processing", nrow(match_days), "matches with severe intolerance threshold...\n")
 
+survival_metrics_severe <- map_df(1:nrow(match_days), function(i) {
+  match_date <- match_days$date[i]
+  metrics <- calculate_survival_metrics(match_date, emboss_for_survival_severe, followup_days)
+  tibble(
+    match_id = i,
+    time = metrics$time,
+    status = metrics$status,
+    n_followup_days = metrics$n_followup
+  )
+})
 
-##########################################
-## this one needs work - gets lost in the prior and post days i believe # 
+# Combine with GPS data # i want to include hr zones here ?
+survival_data_severe <- match_days %>% 
+  mutate(match_id = row_number()) %>% 
+  left_join(survival_metrics_severe, by = "match_id") %>% 
+  select(match_id, date, opposition_full, season,
+         distance, distance_over_21, distance_over_24, distance_over_27,
+         accel_decel_over_2_5, accel_decel_over_3_5, accel_decel_over_4_5,
+         day_duration, peak_speed,
+         time, status, n_followup_days)
 
-############################################
-intolerance_events <- read_csv("outputs/intolerance_events.csv", show_col_types = FALSE)
-
-
-# Create survival dataset directly ###### ERRROR HERE # 
-# Create survival dataset directly
-survival_data <- match_days %>%
-  rowwise() %>%
+# Clean dataset
+survival_data_severe_clean <- survival_data_severe %>% 
+  filter(!is.na(time)) %>% 
   mutate(
-    events_in_window = list(
-      intolerance_events %>%
-        filter(sessionDate >= date - 10,   # include up to 14 days BEFORE
-               sessionDate <= date + 10,   # include up to 14 days AFTER
-               intolerance_event == 1)
-    ),
-    time = if_else(
-      nrow(events_in_window) > 0,
-      as.numeric(min(events_in_window$sessionDate - date)),  # can be negative or positive
-      NA_real_   # no event -> missing here, handle later
-    ),
-    status = if_else(nrow(events_in_window) > 0, 1, 0)
-  ) %>%
-  ungroup() %>%
-  select(-events_in_window) %>%
-  mutate(
-    # if no event, censor at ±14 (whichever side you want to define)
-    time = if_else(is.na(time), 10, time)
+    time = pmax(time, 1),
+    time = pmin(time, followup_days)
   )
 
+# Summary statistics
+cat("\n========== SEVERE INTOLERANCE SURVIVAL DATASET ==========\n")
+cat("Total matches:", nrow(match_days), "\n")
+cat("Matches with follow-up:", nrow(survival_data_severe_clean), "\n")
+cat("Matches excluded:", nrow(match_days) - nrow(survival_data_severe_clean), "\n\n")
 
-
-cat("Total matches:", nrow(survival_data), "\n")
-cat("Events (intolerance within 14 days):", sum(survival_data$status), "\n")
-cat("Censored (no intolerance):", sum(survival_data$status == 0), "\n\n")
-
-
-#add gps
-survival_data <- survival_data %>% 
+cat("Event Summary:\n")
+survival_data_severe_clean %>% 
+  count(status) %>% 
   mutate(
-    # Create intensity categories using tertiles
-    intensity_category = case_when(
-      distance <= quantile(distance, 0.33, na.rm = TRUE) ~ "Low",
-      distance <= quantile(distance, 0.67, na.rm = TRUE) ~ "Moderate",
-      TRUE ~ "High"
-    ),
-    intensity_category = factor(intensity_category, 
-                                levels = c("Low", "Moderate", "High"))
-  )
-
-cat("Intensity categories created\n\n")
-
-# Check distribution
-survival_data %>% 
-  count(intensity_category, status) %>% 
-  pivot_wider(names_from = status, values_from = n, 
-              names_prefix = "status_") %>% 
-  print()
-
-#Surivival summary 
-summary(survival_data$time)
-
-cat("\nGPS predictors (matches only):\n")
-survival_data %>% 
-  select(distance, distance_over_21, distance_over_27, accel_decel_over_3_5) %>% 
-  summary() %>% 
-  print()
-
-# Event rate by intensity
-cat("\nEvent rate by intensity category:\n")
-survival_data %>% 
-  group_by(intensity_category) %>% 
-  summarise(
-    n_matches = n(),
-    n_events = sum(status),
-    event_rate = round(mean(status) * 100, 1)
+    event_type = ifelse(status == 1, "Severe Intolerance", "Normal Recovery (Censored)"),
+    percentage = round(n / sum(n) * 100, 1)
   ) %>% 
+  select(event_type, n, percentage) %>% 
+  print()
+
+cat("\nTime-to-Event Summary:\n")
+summary(survival_data_severe_clean$time)
+
+# Visualise
+p_survival_severe <- survival_data_severe_clean %>% 
+  ggplot(aes(x = time, fill = factor(status))) +
+  geom_histogram(bins = 14, alpha = 0.8, color = "white", position = "stack") +
+  scale_fill_manual(
+    values = c("0" = "steelblue", "1" = "coral"),
+    labels = c("Normal Recovery", "Severe Intolerance"),
+    name = "Status"
+  ) +
+  scale_x_continuous(breaks = seq(1, 14, by = 1)) +
+  theme_minimal() +
+  theme(legend.position = "top") +
+  labs(
+    title = "Time to Severe Training Load Intolerance Post-Match",
+    subtitle = paste0("N = ", nrow(survival_data_severe_clean), " matches"),
+    x = "Days Post-Match",
+    y = "Number of Matches",
+    caption = paste0("Events: ", sum(survival_data_severe_clean$status), 
+                     " | Censored: ", sum(survival_data_severe_clean$status == 0))
+  )
+
+print(p_survival_severe)
+
+# Export
+write_csv(survival_data_severe_clean, "outputs/survival_dataset_severe.csv")
+cat("\n✓ Severe intolerance survival dataset saved\n")
+
+# Show examples
+cat("\n========== EXAMPLE MATCHES ==========\n")
+survival_data_severe_clean %>% 
+  arrange(desc(status), time) %>% 
+  select(date, opposition_full, distance, distance_over_24, 
+         time, status, n_followup_days) %>% 
+  head(15) %>% 
   print()
 
 
-#Data qua;ity checks
-
-# Check for matches without follow-up data
-cat("Matches with missing GPS data:", sum(is.na(survival_data$distance)), "\n")
-
-# Check time range
-cat("Time to event range:", min(survival_data$time), "to", 
-    max(survival_data$time), "days\n")
-
-# Check for ties in survival times
-cat("Ties in event times:", 
-    sum(duplicated(survival_data$time[survival_data$status == 1])), "\n\n")
-
-#export survival dataswert
-
-# Clean dataset for analysis. 
-
-# i feel like I need all fo them in here not just a few
-survival_export <- survival_data %>% 
-  select(
-    date,
-    season,
-    opposition_full,
-    time,
-    status,
-    distance,
-    distance_over_21,
-    distance_over_27,
-    accel_decel_over_3_5,
-    peak_speed,
-    intensity_category
-  )
-
-write_csv(survival_export, "outputs/survival_dataset.csv")
-
-cat("Saved: outputs/survival_dataset.csv\n\n")
-
-#visualisation # this needs to be just post match rather than pre match i think ?
-
-
-p_survival <- survival_data %>% 
-  ggplot(aes(x = distance, y = time, color = factor(status))) +
-  geom_point(size = 2, alpha = 0.7) +
-  scale_color_manual(
-    values = c("0" = "steelblue", "1" = "coral"),
-    labels = c("Censored", "Intolerance"),
-    name = "Outcome"
-  ) +
-  theme_minimal() +
-  labs(
-    title = "Match Distance vs Time to Intolerance",
-    subtitle = paste0("N = ", nrow(survival_data), " matches | ", 
-                      sum(survival_data$status), " events"),
-    x = "Match Distance (m)",
-    y = "Days to Intolerance (or censoring)"
-  )
-
-print(p_survival)
-
-#more plots 
-
-p_survival2 <- survival_data %>% 
-  ggplot(aes(x = peak_speed, y = time, color = factor(status))) +
-  geom_point(size = 2, alpha = 0.7) +
-  scale_color_manual(
-    values = c("0" = "steelblue", "1" = "coral"),
-    labels = c("Censored", "Intolerance"),
-    name = "Outcome"
-  ) +
-  theme_minimal() +
-  labs(
-    title = "Match Peak Speed vs Time to Intolerance",
-    subtitle = paste0("N = ", nrow(survival_data), " matches | ", 
-                      sum(survival_data$status), " events"),
-    x = "Match Peak Speed (m/s)",
-    y = "Days to Intolerance (or censoring)"
-  )
-
-print(p_survival2)
-
-# 5 more plots 
-
-p_survival3 <- survival_data %>% 
-  ggplot(aes(x = accel_decel_over_3_5, y = time, color = factor(status))) +
-  geom_point(size = 2, alpha = 0.7) +
-  scale_color_manual(
-    values = c("0" = "steelblue", "1" = "coral"),
-    labels = c("Censored", "Intolerance"),
-    name = "Outcome"
-  ) +
-  theme_minimal() +
-  labs(
-    title = "Match Accel/Decel >3.5 m/s² vs Time to Intolerance",
-    subtitle = paste0("N = ", nrow(survival_data), " matches | ", 
-                      sum(survival_data$status), " events"),
-    x = "Accel/Decel >3.5 m/s² (count)",
-    y = "Days to Intolerance (or censoring)"
-  )
-
-print(p_survival3)
-
-#more plots
-p_survival4 <- survival_data %>% 
-  ggplot(aes(x = distance_over_21, y = time, color = factor(status))) +
-  geom_point(size = 2, alpha = 0.7) +
-  scale_color_manual(
-    values = c("0" = "steelblue", "1" = "coral"),
-    labels = c("Censored", "Intolerance"),
-    name = "Outcome"
-  ) +
-  theme_minimal() +
-  labs(
-    title = "Match Distance >21 km/h vs Time to Intolerance",
-    subtitle = paste0("N = ", nrow(survival_data), " matches | ", 
-                      sum(survival_data$status), " events"),
-    x = "Distance >21 km/h (m)",
-    y = "Days to Intolerance (or censoring)"
-  )
-print(p_survival4)
 
 
 
@@ -476,49 +388,224 @@ print(p_survival4)
 
 
 
-#Part 4 ====
-##survival CPH analysis ====
-survival_data <- read_csv("outputs/survival_dataset.csv", show_col_types = FALSE)
-
-
-cat("Dataset:", nrow(survival_data), "matches\n")
-cat("Events:", sum(survival_data$status), "\n")
-cat("Censored:", sum(survival_data$status == 0), "\n\n")
 
 
 
-##KAplan Meir ====
 
-# Fit KM model stratified by intensity
-km_fit <- survfit(Surv(time, status) ~ intensity_category, 
-                  data = survival_data)
 
-print(summary(km_fit))
 
-# Log-rank test
-log_rank <- survdiff(Surv(time, status) ~ intensity_category, 
-                     data = survival_data)
 
-cat("\nLog-rank test:\n")
-print(log_rank)
+## PHASE 3: SURVIVAL ANALYSIS ====
+## Purpose: Cox models to identify GPS predictors of severe intolerance
+#i want to make sure i am using all gps preicotrs here - like not just a selection of a few - i want to try all variations possisible
 
-# Create KM plot
-p_km <- ggsurvplot(
-  km_fit,
-  data = survival_data,
-  pval = TRUE,
+library(survival)
+library(survminer)
+
+cat("\n========== PHASE 3: SURVIVAL ANALYSIS ==========\n")
+
+# Load survival dataset
+surv_data <- survival_data_severe_clean
+
+# A. KAPLAN-MEIER CURVES ====
+cat("\n========== A. KAPLAN-MEIER SURVIVAL CURVES ==========\n")
+
+# Overall survival curve (no stratification)
+km_overall <- survfit(Surv(time, status) ~ 1, data = surv_data)
+
+# Print summary
+print(summary(km_overall))
+
+# Plot with ggsurvplot (taught in class)
+p_km_overall <- ggsurvplot(
+  km_overall,
+  data = surv_data,
   conf.int = TRUE,
   risk.table = TRUE,
-  risk.table.height = 0.3,
-  legend.title = "Match Intensity",
-  legend.labs = c("Low", "Moderate", "High"),
-  palette = c("steelblue", "orange", "coral"),
+  title = "Overall Survival: Time to Severe Intolerance Post-Match",
   xlab = "Days Post-Match",
-  ylab = "Probability of No Intolerance",
-  title = "Kaplan-Meier Survival Curves",
-  subtitle = "Time to training load intolerance by match intensity"
+  ylab = "Probability of Normal Recovery",
+  legend = "none"
+)
+print(p_km_overall)
+
+# Stratify by GPS intensity categories
+# Create categorical variables for key GPS metrics
+surv_data <- surv_data %>% 
+  mutate(
+    distance_cat = cut(distance, 
+                       breaks = quantile(distance, c(0, 0.33, 0.67, 1)),
+                       labels = c("Low", "Medium", "High"),
+                       include.lowest = TRUE),
+    hsr_cat = cut(distance_over_24,
+                  breaks = quantile(distance_over_24, c(0, 0.33, 0.67, 1)),
+                  labels = c("Low HSR", "Medium HSR", "High HSR"),
+                  include.lowest = TRUE),
+    accel_cat = cut(accel_decel_over_3_5,
+                    breaks = quantile(accel_decel_over_3_5, c(0, 0.33, 0.67, 1)),
+                    labels = c("Low Accel", "Medium Accel", "High Accel"),
+                    include.lowest = TRUE)
+  )
+
+# KM curves by total distance
+km_distance <- survfit(Surv(time, status) ~ distance_cat, data = surv_data)
+
+p_km_distance <- ggsurvplot(
+  km_distance,
+  data = surv_data,
+  conf.int = TRUE,
+  pval = TRUE,  # Show log-rank test p-value
+  risk.table = TRUE,
+  title = "Survival by Total Distance Category",
+  xlab = "Days Post-Match",
+  ylab = "Probability of Normal Recovery",
+  legend.title = "Distance",
+  legend.labs = c("Low", "Medium", "High")
+)
+print(p_km_distance)
+
+# KM curves by HSR
+km_hsr <- survfit(Surv(time, status) ~ hsr_cat, data = surv_data)
+
+p_km_hsr <- ggsurvplot(
+  km_hsr,
+  data = surv_data,
+  conf.int = TRUE,
+  pval = TRUE,
+  risk.table = TRUE,
+  title = "Survival by High-Speed Running Category",
+  xlab = "Days Post-Match",
+  ylab = "Probability of Normal Recovery",
+  legend.title = "HSR Distance",
+  legend.labs = c("Low HSR", "Medium HSR", "High HSR")
+)
+print(p_km_hsr)
+
+# Log-rank test for distance categories
+cat("\n========== LOG-RANK TEST: Distance Categories ==========\n")
+survdiff_distance <- survdiff(Surv(time, status) ~ distance_cat, data = surv_data)
+print(survdiff_distance)
+
+cat("\n========== LOG-RANK TEST: HSR Categories ==========\n")
+survdiff_hsr <- survdiff(Surv(time, status) ~ hsr_cat, data = surv_data)
+print(survdiff_hsr)
+
+# B. COX PROPORTIONAL HAZARDS MODELS ====
+cat("\n========== B. COX PROPORTIONAL HAZARDS MODELS ==========\n")
+
+# Model 1: Total distance only
+cox_model1 <- coxph(Surv(time, status) ~ distance, data = surv_data)
+cat("\n--- Model 1: Total Distance ---\n")
+summary(cox_model1)
+
+# Model 2: HSR metrics
+cox_model2 <- coxph(Surv(time, status) ~ distance_over_21 + distance_over_24 + 
+                      distance_over_27, data = surv_data)
+cat("\n--- Model 2: HSR Metrics ---\n")
+summary(cox_model2)
+
+# Model 3: Acceleration/deceleration
+cox_model3 <- coxph(Surv(time, status) ~ accel_decel_over_2_5 + 
+                      accel_decel_over_3_5 + accel_decel_over_4_5, 
+                    data = surv_data)
+cat("\n--- Model 3: Acceleration Metrics ---\n")
+summary(cox_model3)
+
+# Model 4: Combined key metrics (final model)
+# Scale variables to avoid convergence issues
+surv_data_scaled <- surv_data %>% 
+  mutate(
+    distance_scaled = scale(distance)[,1],
+    hsr_scaled = scale(distance_over_24)[,1],
+    accel_scaled = scale(accel_decel_over_3_5)[,1]
+  )
+
+cox_final <- coxph(Surv(time, status) ~ distance_scaled + hsr_scaled + accel_scaled, 
+                   data = surv_data_scaled)
+cat("\n--- Final Model: Combined GPS Metrics (Scaled) ---\n")
+summary(cox_final)
+
+# Compare models with AIC
+cat("\n========== MODEL COMPARISON (AIC) ==========\n")
+aic_comparison <- tibble(
+  Model = c("Distance only", "HSR metrics", "Accel metrics", "Combined"),
+  AIC = c(AIC(cox_model1), AIC(cox_model2), AIC(cox_model3), AIC(cox_final))
+) %>% 
+  arrange(AIC)
+print(aic_comparison)
+
+# Visualize hazard ratios (forest plot)
+p_forest <- ggforest(cox_final, data = surv_data_scaled)
+print(p_forest)
+
+# C. MODEL DIAGNOSTICS ====
+cat("\n========== C. PROPORTIONAL HAZARDS ASSUMPTION TEST ==========\n")
+
+# Test PH assumption using cox.zph (Schoenfeld residuals)
+ph_test_final <- cox.zph(cox_final)
+print(ph_test_final)
+
+# Plot Schoenfeld residuals
+par(mfrow = c(2, 2))
+plot(ph_test_final)
+par(mfrow = c(1, 1))
+
+# If PH assumption violated, consider stratification
+# Example: Stratify by a problematic variable
+if(any(ph_test_final$table[,"p"] < 0.05)) {
+  cat("\n⚠ Proportional hazards assumption violated for some variables\n")
+  cat("Consider stratified model if needed\n\n")
+  
+  # Example stratified model (if needed)
+  # cox_stratified <- coxph(Surv(time, status) ~ distance_scaled + hsr_scaled + 
+  #                          strata(accel_cat), data = surv_data_scaled)
+} else {
+  cat("\n✓ Proportional hazards assumption satisfied\n\n")
+}
+
+# D. PREDICTED SURVIVAL CURVES ====
+cat("\n========== D. ADJUSTED SURVIVAL CURVES ==========\n")
+
+# Create prediction data for different GPS intensities
+newdata_predict <- tibble(
+  distance_scaled = c(-1, 0, 1),  # Low, Medium, High
+  hsr_scaled = c(-1, 0, 1),
+  accel_scaled = c(-1, 0, 1),
+  intensity = c("Low Intensity", "Medium Intensity", "High Intensity")
 )
 
-print(p_km)
+# Predict survival curves
+fit_predict <- survfit(cox_final, newdata = newdata_predict)
 
-####high vs mdoeate is coonfusing here - look into why these are the results need all markers in it ?
+# Plot adjusted curves
+p_adjusted <- ggsurvplot(
+  fit_predict,
+  data = surv_data_scaled,
+  conf.int = TRUE,
+  title = "Predicted Survival by Match Intensity",
+  xlab = "Days Post-Match",
+  ylab = "Probability of Normal Recovery",
+  legend.title = "Match Intensity",
+  legend.labs = newdata_predict$intensity
+)
+print(p_adjusted)
+
+# E. SUMMARY TABLE ====
+cat("\n========== FINAL RESULTS SUMMARY ==========\n")
+
+# Extract hazard ratios from final model
+hr_summary <- broom::tidy(cox_final, exponentiate = TRUE, conf.int = TRUE) %>% 
+  select(term, estimate, conf.low, conf.high, p.value) %>% 
+  mutate(
+    term = case_when(
+      term == "distance_scaled" ~ "Total Distance (per SD)",
+      term == "hsr_scaled" ~ "High-Speed Running (per SD)",
+      term == "accel_scaled" ~ "Accelerations (per SD)",
+      TRUE ~ term
+    ),
+    HR = paste0(round(estimate, 2), " (", round(conf.low, 2), "-", round(conf.high, 2), ")"),
+    p_value = ifelse(p.value < 0.001, "<0.001", round(p.value, 3))
+  ) %>% 
+  select(term, HR, p_value)
+
+print(hr_summary)

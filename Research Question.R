@@ -1,0 +1,1 @@
+#Can we forecast daily training load intolerance in elite football by combining GPS-intensity survival models with time series forecasting to enable proactive recovery management?
