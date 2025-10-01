@@ -739,3 +739,538 @@ forecast_plot <- forecasts %>%
   theme_minimal()
 
 print(forecast_plot)
+
+
+
+
+
+
+
+
+#######
+
+
+
+
+# Add GPS External Regressors to Time Series Models
+cat("Adding GPS match intensity as external regressors\n")
+
+# Step 1: Get GPS data for overlap matches
+gps_match_data <- overlap_matches %>%
+  select(date, distance, distance_over_21, distance_over_24, distance_over_27,
+         accel_decel_over_2_5, accel_decel_over_3_5, accel_decel_over_4_5,
+         peak_speed, day_duration) %>%
+  rename(match_date = date)
+
+cat("GPS match data prepared for", nrow(gps_match_data), "matches\n")
+
+# Step 2: Create recovery data with GPS predictors
+recovery_with_gps <- recovery_data_3day %>%
+  filter(capability_id == target_capability) %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  arrange(date) %>%
+  select(date, daily_score, match_date, days_post_match, 
+         distance, distance_over_27, accel_decel_over_3_5, peak_speed)
+
+cat("Recovery data with GPS predictors:\n")
+cat("Observations:", nrow(recovery_with_gps), "\n")
+cat("GPS variables added: distance, distance_over_27, accel_decel_over_3_5, peak_speed\n")
+
+# Step 3: Create daily time series with GPS predictors
+daily_ts_with_gps <- recovery_with_gps %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  # Fill GPS values forward (match intensity affects following days)
+  fill(distance, distance_over_27, accel_decel_over_3_5, peak_speed, .direction = "down") %>%
+  fill(daily_score, .direction = "down") %>%
+  filter(!is.na(daily_score)) %>%
+  as_tsibble(index = date)
+
+cat("Daily time series with GPS created:", nrow(daily_ts_with_gps), "observations\n")
+
+# Step 4: Train/test split (same as before for comparison)
+train_gps <- daily_ts_with_gps %>% filter(date <= split_date)
+test_gps <- daily_ts_with_gps %>% filter(date > split_date)
+
+cat("Training observations:", nrow(train_gps), "\n")
+cat("Test observations:", nrow(test_gps), "\n")
+
+# Step 5: Build models with GPS external regressors
+cat("Building models with GPS external regressors...\n")
+
+models_with_gps <- train_gps %>%
+  model(
+    # Original best model for comparison
+    drift_only = RW(daily_score ~ drift()),
+    
+    # Models with GPS predictors (using TSLM for external regressors)
+    gps_distance = TSLM(daily_score ~ distance),
+    gps_high_speed = TSLM(daily_score ~ distance_over_27),
+    gps_acceleration = TSLM(daily_score ~ accel_decel_over_3_5),
+    gps_combined = TSLM(daily_score ~ distance_over_27 + accel_decel_over_3_5),
+    
+    # Advanced: ARIMA with external regressors
+    arima_gps = ARIMA(daily_score ~ distance_over_27 + accel_decel_over_3_5)
+  )
+
+# Step 6: Generate forecasts
+forecasts_gps <- models_with_gps %>%
+  forecast(new_data = test_gps)
+
+# Step 7: Compare accuracy
+accuracy_gps <- forecasts_gps %>%
+  accuracy(test_gps) %>%
+  arrange(RMSE)
+
+cat("Model accuracy with GPS regressors:\n")
+print(accuracy_gps)
+
+# Step 8: Visualize improved forecasts
+forecast_plot_gps <- forecasts_gps %>%
+  autoplot(daily_ts_with_gps, level = 95) +
+  labs(
+    title = "Jump Takeoff Forecasting: GPS Enhanced Models",
+    subtitle = "Comparing models with and without GPS match intensity",
+    x = "Date",
+    y = "Capability Score"
+  ) +
+  theme_minimal()
+
+print(forecast_plot_gps)
+
+
+
+
+
+
+# Test GPS Predictors on Sprint Max Velocity (Different Movement Pattern)
+cat("Testing GPS predictors on sprint capability\n")
+
+# Select sprint capability 
+sprint_capability <- "sprint_max velocity_dynamic"
+cat("Testing capability:", sprint_capability, "\n")
+
+# Check if this capability has good data coverage
+sprint_coverage <- recovery_3day_summary %>%
+  filter(capability_id == sprint_capability)
+print(sprint_coverage)
+
+# Create time series for sprint capability
+sprint_data <- recovery_data_3day %>%
+  filter(capability_id == sprint_capability) %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  arrange(date) %>%
+  select(date, daily_score, match_date, days_post_match, 
+         distance, distance_over_27, accel_decel_over_3_5, peak_speed)
+
+# Create daily time series
+sprint_ts <- sprint_data %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  fill(distance, distance_over_27, accel_decel_over_3_5, peak_speed, .direction = "down") %>%
+  fill(daily_score, .direction = "down") %>%
+  filter(!is.na(daily_score)) %>%
+  as_tsibble(index = date)
+
+cat("Sprint time series created:", nrow(sprint_ts), "observations\n")
+
+# Train/test split (using same split date for comparison)
+sprint_train <- sprint_ts %>% filter(date <= split_date)
+sprint_test <- sprint_ts %>% filter(date > split_date)
+
+# Build models for sprint
+sprint_models <- sprint_train %>%
+  model(
+    drift_only = RW(daily_score ~ drift()),
+    gps_distance = TSLM(daily_score ~ distance),
+    gps_high_speed = TSLM(daily_score ~ distance_over_27),
+    gps_combined = TSLM(daily_score ~ distance_over_27 + accel_decel_over_3_5),
+    arima_gps = ARIMA(daily_score ~ distance_over_27 + accel_decel_over_3_5)
+  )
+
+# Generate forecasts
+sprint_forecasts <- sprint_models %>%
+  forecast(new_data = sprint_test)
+
+# Check accuracy
+sprint_accuracy <- sprint_forecasts %>%
+  accuracy(sprint_test) %>%
+  arrange(RMSE)
+
+cat("Sprint capability - Model accuracy:\n")
+print(sprint_accuracy)
+
+# Compare with jump results
+cat("\nComparison: Jump vs Sprint GPS predictor performance\n")
+cat("Jump - Best model: drift_only (RMSE: 0.00604)\n")
+cat("Sprint - Best model:", sprint_accuracy$.model[1], "(RMSE:", round(sprint_accuracy$RMSE[1], 5), ")\n")
+
+# Quick visualization
+sprint_plot <- sprint_forecasts %>%
+  autoplot(sprint_ts, level = 95) +
+  labs(
+    title = "Sprint Max Velocity Forecasting",
+    subtitle = "Testing GPS predictors on different capability",
+    x = "Date",
+    y = "Sprint Capability Score"
+  ) +
+  theme_minimal()
+
+print(sprint_plot)
+
+
+
+
+
+
+
+
+
+
+
+
+# Create Composite Player Readiness Score
+cat("Creating composite player readiness score from multiple capabilities\n")
+
+# Select key capabilities representing different movement qualities
+key_capabilities <- c("jump_take off_dynamic", "sprint_max velocity_dynamic", 
+                      "agility_deceleration_dynamic", "upper body_pull_dynamic")
+
+cat("Selected capabilities for composite score:\n")
+for(cap in key_capabilities) {
+  coverage <- recovery_3day_summary %>% filter(capability_id == cap)
+  cat("-", cap, ":", coverage$n_observations, "observations\n")
+}
+
+# Create composite dataset
+composite_data <- recovery_data_3day %>%
+  filter(capability_id %in% key_capabilities) %>%
+  select(date, capability_id, daily_score, match_date, days_post_match) %>%
+  pivot_wider(names_from = capability_id, values_from = daily_score, 
+              names_prefix = "cap_") %>%
+  # Clean column names
+  rename_with(~str_replace_all(.x, c(" " = "_", "-" = "_")), starts_with("cap_")) %>%
+  # Create composite readiness score (average of all capabilities)
+  rowwise() %>%
+  mutate(
+    composite_score = mean(c_across(starts_with("cap_")), na.rm = TRUE),
+    capabilities_available = sum(!is.na(c_across(starts_with("cap_"))))
+  ) %>%
+  # Only keep days with at least 3 capabilities tested
+  filter(capabilities_available >= 3) %>%
+  arrange(date)
+
+cat("Composite readiness dataset created:\n")
+cat("Observations:", nrow(composite_data), "\n")
+cat("Date range:", as.character(min(composite_data$date)), "to", 
+    as.character(max(composite_data$date)), "\n")
+
+# Add GPS predictors to composite data
+composite_with_gps <- composite_data %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  select(date, composite_score, match_date, days_post_match,
+         distance, distance_over_27, accel_decel_over_3_5, peak_speed)
+
+# Create time series for composite score
+composite_ts <- composite_with_gps %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  fill(everything(), .direction = "down") %>%
+  filter(!is.na(composite_score)) %>%
+  as_tsibble(index = date)
+
+cat("Composite time series created:", nrow(composite_ts), "observations\n")
+
+# Train/test split
+comp_train <- composite_ts %>% filter(date <= split_date)
+comp_test <- composite_ts %>% filter(date > split_date)
+
+# Build models for composite readiness
+composite_models <- comp_train %>%
+  model(
+    drift_only = RW(composite_score ~ drift()),
+    arima = ARIMA(composite_score),
+    ets = ETS(composite_score),
+    gps_combined = TSLM(composite_score ~ distance_over_27 + accel_decel_over_3_5),
+    arima_gps = ARIMA(composite_score ~ distance_over_27 + accel_decel_over_3_5)
+  )
+
+# Generate forecasts
+composite_forecasts <- composite_models %>%
+  forecast(new_data = comp_test)
+
+# Check accuracy
+composite_accuracy <- composite_forecasts %>%
+  accuracy(comp_test) %>%
+  arrange(RMSE)
+
+cat("Composite Player Readiness - Model accuracy:\n")
+print(composite_accuracy)
+
+# Visualize composite readiness forecasting
+composite_plot <- composite_forecasts %>%
+  autoplot(composite_ts, level = 95) +
+  labs(
+    title = "Composite Player Readiness Forecasting",
+    subtitle = "Overall physical capability across multiple movement patterns",
+    x = "Date",
+    y = "Composite Readiness Score"
+  ) +
+  theme_minimal()
+
+print(composite_plot)
+
+# Summary comparison across all approaches
+cat("\n========== METHODOLOGY SUMMARY ==========\n")
+cat("Jump capability - Best RMSE:", round(min(accuracy_gps$RMSE), 5), "\n")
+cat("Sprint capability - Best RMSE:", round(min(sprint_accuracy$RMSE), 5), "\n") 
+cat("Composite readiness - Best RMSE:", round(min(composite_accuracy$RMSE), 5), "\n")
+cat("GPS predictors: Consistently perform worse than simple drift models\n")
+
+
+
+
+
+
+
+
+
+# Test Alternative GPS Effect Approaches
+cat("Testing alternative approaches to detect GPS effects\n")
+
+# Test 1: Extreme GPS days only (top 25% intensity matches)
+gps_extremes <- gps_match_data %>%
+  mutate(
+    high_intensity = distance_over_27 > quantile(distance_over_27, 0.75, na.rm = TRUE),
+    extreme_gps = ifelse(high_intensity, distance_over_27, NA)
+  )
+
+# Test 2: Lagged effects (GPS predicting Day 2 recovery specifically)
+recovery_day2_only <- recovery_data_3day %>%
+  filter(capability_id == "jump_take off_dynamic", days_post_match == 2) %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  select(date, daily_score, distance_over_27, accel_decel_over_3_5)
+
+cat("Day 2 recovery data:", nrow(recovery_day2_only), "observations\n")
+
+# Simple correlation test
+if(nrow(recovery_day2_only) > 10) {
+  cor_distance <- cor(recovery_day2_only$daily_score, 
+                      recovery_day2_only$distance_over_27, 
+                      use = "complete.obs")
+  cor_accel <- cor(recovery_day2_only$daily_score, 
+                   recovery_day2_only$accel_decel_over_3_5, 
+                   use = "complete.obs")
+  
+  cat("Day 2 correlations:\n")
+  cat("GPS distance_over_27 vs recovery:", round(cor_distance, 3), "\n")
+  cat("GPS accelerations vs recovery:", round(cor_accel, 3), "\n")
+}
+
+# Test 3: Threshold model (only high intensity matches)
+threshold_data <- recovery_data_3day %>%
+  filter(capability_id == "jump_take off_dynamic") %>%
+  left_join(gps_extremes, by = "match_date") %>%
+  filter(!is.na(extreme_gps)) %>%  # Only high intensity matches
+  arrange(date)
+
+cat("High intensity matches only:", nrow(threshold_data), "observations\n")
+
+if(nrow(threshold_data) > 50) {
+  # Quick linear model test
+  threshold_model <- lm(daily_score ~ extreme_gps + days_post_match, 
+                        data = threshold_data)
+  cat("High intensity model p-value:", 
+      round(summary(threshold_model)$coefficients[2,4], 4), "\n")
+}
+
+
+
+
+
+
+# Test GPS × Time Interaction Effects
+cat("Testing GPS × days_post_match interaction effects\n")
+
+# Create interaction dataset
+interaction_data <- recovery_data_3day %>%
+  filter(capability_id == "jump_take off_dynamic") %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  filter(!is.na(distance_over_27)) %>%
+  mutate(
+    # Standardize GPS variables for easier interpretation
+    gps_high_speed_z = scale(distance_over_27)[,1],
+    gps_accel_z = scale(accel_decel_over_3_5)[,1]
+  )
+
+cat("Interaction dataset:", nrow(interaction_data), "observations\n")
+
+# Test 1: GPS × days_post_match interaction
+interaction_model1 <- lm(daily_score ~ gps_high_speed_z * days_post_match, 
+                         data = interaction_data)
+
+cat("\nInteraction Model 1: GPS High Speed × Days Post-Match\n")
+summary_model1 <- summary(interaction_model1)
+cat("Interaction p-value:", round(summary_model1$coefficients[4,4], 4), "\n")
+cat("R-squared:", round(summary_model1$r.squared, 4), "\n")
+
+# Test 2: GPS accelerations × days_post_match interaction  
+interaction_model2 <- lm(daily_score ~ gps_accel_z * days_post_match,
+                         data = interaction_data)
+
+cat("\nInteraction Model 2: GPS Accelerations × Days Post-Match\n")
+summary_model2 <- summary(interaction_model2)
+cat("Interaction p-value:", round(summary_model2$coefficients[4,4], 4), "\n")
+cat("R-squared:", round(summary_model2$r.squared, 4), "\n")
+
+# Test 3: Combined interaction model
+interaction_model3 <- lm(daily_score ~ (gps_high_speed_z + gps_accel_z) * days_post_match,
+                         data = interaction_data)
+
+cat("\nInteraction Model 3: Combined GPS × Days Post-Match\n")
+summary_model3 <- summary(interaction_model3)
+print(round(summary_model3$coefficients[,4], 4))  # Show all p-values
+
+# Visualize interaction effect (if significant)
+if(summary_model1$coefficients[4,4] < 0.1) {
+  cat("\nCreating interaction visualization...\n")
+  
+  # Create prediction data for visualization
+  pred_data <- expand.grid(
+    gps_high_speed_z = c(-1, 0, 1),  # Low, Medium, High GPS
+    days_post_match = 1:3
+  )
+  
+  pred_data$predicted_recovery <- predict(interaction_model1, pred_data)
+  pred_data$gps_level <- factor(pred_data$gps_high_speed_z, 
+                                labels = c("Low GPS", "Medium GPS", "High GPS"))
+  
+  interaction_plot <- ggplot(pred_data, aes(x = days_post_match, y = predicted_recovery, 
+                                            color = gps_level)) +
+    geom_line(size = 1.2) +
+    geom_point(size = 3) +
+    labs(
+      title = "GPS × Time Interaction Effect",
+      subtitle = "How GPS intensity affects recovery trajectory",
+      x = "Days Post-Match",
+      y = "Predicted Jump Capability",
+      color = "GPS Intensity"
+    ) +
+    theme_minimal()
+  
+  print(interaction_plot)
+} else {
+  cat("No significant interaction effects found\n")
+}
+
+# Summary of findings
+cat("\n========== INTERACTION EFFECTS SUMMARY ==========\n")
+cat("GPS High Speed × Time p-value:", round(summary_model1$coefficients[4,4], 4), "\n")
+cat("GPS Accelerations × Time p-value:", round(summary_model2$coefficients[4,4], 4), "\n")
+
+if(min(summary_model1$coefficients[4,4], summary_model2$coefficients[4,4]) < 0.05) {
+  cat("SIGNIFICANT INTERACTION FOUND: GPS intensity affects recovery trajectory\n")
+} else {
+  cat("No significant interactions: GPS doesn't change recovery slope\n")
+}
+
+
+
+
+# Test Heart Rate Zone Predictors
+cat("Testing heart rate zones as recovery predictors\n")
+
+# Check available HR data in overlap matches
+hr_data <- overlap_matches %>%
+  select(date, hr_zone_1_hms, hr_zone_2_hms, hr_zone_3_hms, 
+         hr_zone_4_hms, hr_zone_5_hms) %>%
+  rename(match_date = date) %>%
+  # Convert HMS to minutes
+  mutate(
+    hr_zone_1_min = as.numeric(hr_zone_1_hms) / 60,
+    hr_zone_2_min = as.numeric(hr_zone_2_hms) / 60,
+    hr_zone_3_min = as.numeric(hr_zone_3_hms) / 60,
+    hr_zone_4_min = as.numeric(hr_zone_4_hms) / 60,
+    hr_zone_5_min = as.numeric(hr_zone_5_hms) / 60,
+    # Calculate high intensity HR (zones 4+5)
+    hr_high_intensity = hr_zone_4_min + hr_zone_5_min,
+    # Calculate total HR time
+    hr_total_time = hr_zone_1_min + hr_zone_2_min + hr_zone_3_min + hr_zone_4_min + hr_zone_5_min
+  ) %>%
+  select(match_date, hr_zone_4_min, hr_zone_5_min, hr_high_intensity, hr_total_time)
+
+cat("HR data summary:\n")
+summary(hr_data %>% select(-match_date))
+
+# Create recovery data with HR predictors
+recovery_hr <- recovery_data_3day %>%
+  filter(capability_id == "jump_take off_dynamic") %>%
+  left_join(hr_data, by = "match_date") %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  filter(!is.na(hr_high_intensity))
+
+cat("Recovery observations with HR data:", nrow(recovery_hr), "\n")
+
+# Test 1: HR zones vs GPS distance correlation
+if("distance_over_27" %in% names(recovery_hr)) {
+  cor_hr_gps <- cor(recovery_hr$hr_high_intensity, recovery_hr$distance_over_27, use = "complete.obs")
+  cat("Correlation HR high intensity vs GPS distance >27:", round(cor_hr_gps, 3), "\n")
+} else {
+  cat("GPS data not available for correlation\n")
+}
+
+# Test 2: HR as predictor for Day 2 recovery
+hr_day2 <- recovery_hr %>%
+  filter(days_post_match == 2) %>%
+  select(daily_score, hr_high_intensity, hr_zone_4_min, hr_zone_5_min)
+
+if(nrow(hr_day2) > 10) {
+  cor_hr_recovery <- cor(hr_day2$daily_score, hr_day2$hr_high_intensity, use = "complete.obs")
+  cat("HR high intensity vs Day 2 recovery correlation:", round(cor_hr_recovery, 3), "\n")
+  
+  cor_zone4 <- cor(hr_day2$daily_score, hr_day2$hr_zone_4_min, use = "complete.obs")
+  cor_zone5 <- cor(hr_day2$daily_score, hr_day2$hr_zone_5_min, use = "complete.obs")
+  
+  cat("HR Zone 4 vs Day 2 recovery correlation:", round(cor_zone4, 3), "\n")
+  cat("HR Zone 5 vs Day 2 recovery correlation:", round(cor_zone5, 3), "\n")
+}
+
+# Test 3: HR linear model
+hr_model <- lm(daily_score ~ hr_high_intensity + days_post_match, data = recovery_hr)
+hr_summary <- summary(hr_model)
+
+cat("\nHR Linear Model Results:\n")
+cat("HR coefficient p-value:", round(hr_summary$coefficients[2,4], 4), "\n")
+cat("R-squared:", round(hr_summary$r.squared, 4), "\n")
+
+# Test 4: HR extreme threshold (like GPS test)
+hr_extreme_threshold <- quantile(recovery_hr$hr_high_intensity, 0.75, na.rm = TRUE)
+hr_extreme_data <- recovery_hr %>%
+  filter(hr_high_intensity > hr_extreme_threshold)
+
+cat("High HR matches (top 25%):", nrow(hr_extreme_data), "observations\n")
+
+if(nrow(hr_extreme_data) > 20) {
+  hr_extreme_model <- lm(daily_score ~ hr_high_intensity + days_post_match, 
+                         data = hr_extreme_data)
+  hr_extreme_summary <- summary(hr_extreme_model)
+  cat("High HR model p-value:", round(hr_extreme_summary$coefficients[2,4], 4), "\n")
+}
+
+# Test 5: Compare HR vs GPS in same model
+combined_hr_gps <- recovery_hr %>%
+  left_join(gps_match_data, by = "match_date") %>%
+  filter(!is.na(distance_over_27))
+
+if(nrow(combined_hr_gps) > 50) {
+  combined_model <- lm(daily_score ~ hr_high_intensity + distance_over_27 + days_post_match, 
+                       data = combined_hr_gps)
+  combined_summary <- summary(combined_model)
+  
+  cat("\nCombined HR + GPS Model:\n")
+  cat("HR p-value:", round(combined_summary$coefficients[2,4], 4), "\n")
+  cat("GPS p-value:", round(combined_summary$coefficients[3,4], 4), "\n")
+  cat("R-squared:", round(combined_summary$r.squared, 4), "\n")
+}
+
+cat("\n========== HR TESTING SUMMARY ==========\n")
+cat("HR provides different physiological stress measure than GPS distance\n")
+cat("Testing complete - compare results with GPS findings\n")
+
