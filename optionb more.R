@@ -8,7 +8,7 @@ library(lubridate)
 library(fpp3)
 
 # Load Data
-gps <- read_csv("Data/CFC GPS Data.csv")
+gps <-read_csv("Data/CFC GPS Data.csv")
 phys_cap <- read_csv("Data/CFC Physical Capability Data_.csv")
 
 # Data Preparation
@@ -375,3 +375,163 @@ cat("- ARIMA models work better for control-based movements\n")
 cat("- Heart rate intensity affects overall readiness more than GPS distance\n")
 cat("- Extreme training loads (top 25%) significantly impact recovery patterns\n")
 cat("- Individual recovery trajectories are highly predictable\n")
+
+
+
+
+# Corrected Time Series Forecasting Function with External Regressors
+forecast_capability_with_regressors <- function(capability_name) {
+  
+  # Create time series data with GPS/HR joined
+  ts_data <- recovery_data %>%
+    filter(capability_id == capability_name) %>%
+    left_join(gps_hr_data, by = "match_date") %>%
+    arrange(date) %>%
+    complete(date = seq(min(date), max(date), by = "day")) %>%
+    fill(everything(), .direction = "down") %>%
+    filter(!is.na(daily_score), !is.na(distance_over_27), !is.na(hr_high_intensity)) %>%
+    as_tsibble(index = date)
+  
+  # Train/test split
+  split_point <- floor(nrow(ts_data) * 0.8)
+  split_date <- ts_data$date[split_point]
+  
+  train_data <- ts_data %>% filter(date <= split_date)
+  test_data <- ts_data %>% filter(date > split_date)
+  
+  # Build models including external regressors
+  models <- train_data %>%
+    model(
+      # Pure time series models
+      drift_only = RW(daily_score ~ drift()),
+      arima_only = ARIMA(daily_score),
+      ets_only = ETS(daily_score),
+      
+      # Time series with external regressors
+      arima_gps = ARIMA(daily_score ~ distance_over_27),
+      arima_hr = ARIMA(daily_score ~ hr_high_intensity),
+      arima_combined = ARIMA(daily_score ~ distance_over_27 + hr_high_intensity)
+    )
+  
+  # Generate forecasts (this should work now because test_data has the regressors)
+  forecasts <- models %>% forecast(new_data = test_data)
+  
+  # Calculate accuracy
+  accuracy_results <- forecasts %>% 
+    accuracy(test_data) %>% 
+    arrange(RMSE)
+  
+  return(list(
+    capability = capability_name,
+    accuracy = accuracy_results,
+    best_model = accuracy_results$.model[1],
+    best_rmse = accuracy_results$RMSE[1],
+    models = models,
+    forecasts = forecasts
+  ))
+}
+
+# Test on one capability first
+cat("Testing external regressors on jump capability...\n")
+jump_result <- forecast_capability_with_regressors("jump_take off_dynamic")
+
+# Show results
+cat("Model performance comparison:\n")
+print(jump_result$accuracy)
+
+# Check if external regressors improved forecasting
+best_ts_only <- min(jump_result$accuracy$RMSE[jump_result$accuracy$.model %in% c("drift_only", "arima_only", "ets_only")])
+best_with_regressors <- min(jump_result$accuracy$RMSE[jump_result$accuracy$.model %in% c("arima_gps", "arima_hr", "arima_combined")])
+
+cat(sprintf("\nBest time series only RMSE: %.5f\n", best_ts_only))
+cat(sprintf("Best with external regressors RMSE: %.5f\n", best_with_regressors))
+
+if(best_with_regressors < best_ts_only) {
+  cat("External regressors IMPROVED forecasting!\n")
+} else {
+  cat("Pure time series methods performed better.\n")
+}
+
+
+
+
+
+
+
+
+
+
+# Test External Regressors Across All Capabilities
+cat("Testing external regressors on all four capabilities...\n\n")
+
+# Run analysis for all capabilities
+all_capabilities_results <- map(key_capabilities, function(cap) {
+  cat(sprintf("Processing %s...\n", cap))
+  result <- forecast_capability_with_regressors(cap)
+  return(result)
+})
+
+# Extract and compare results
+cat("\n=== EXTERNAL REGRESSOR COMPARISON RESULTS ===\n\n")
+
+for(i in seq_along(all_capabilities_results)) {
+  result <- all_capabilities_results[[i]]
+  capability_name <- str_replace_all(result$capability, "_", " ")
+  
+  cat(sprintf("%s:\n", toupper(capability_name)))
+  
+  # Get best performing models
+  best_ts_only <- min(result$accuracy$RMSE[result$accuracy$.model %in% c("drift_only", "arima_only", "ets_only")])
+  best_with_regressors <- min(result$accuracy$RMSE[result$accuracy$.model %in% c("arima_gps", "arima_hr", "arima_combined")])
+  
+  # Find which specific models were best
+  best_ts_model <- result$accuracy$.model[result$accuracy$.model %in% c("drift_only", "arima_only", "ets_only")][which.min(result$accuracy$RMSE[result$accuracy$.model %in% c("drift_only", "arima_only", "ets_only")])]
+  best_regressor_model <- result$accuracy$.model[result$accuracy$.model %in% c("arima_gps", "arima_hr", "arima_combined")][which.min(result$accuracy$RMSE[result$accuracy$.model %in% c("arima_gps", "arima_hr", "arima_combined")])]
+  
+  cat(sprintf("  Best time series: %s (RMSE: %.5f)\n", best_ts_model, best_ts_only))
+  cat(sprintf("  Best w/ regressors: %s (RMSE: %.5f)\n", best_regressor_model, best_with_regressors))
+  
+  improvement <- ((best_ts_only - best_with_regressors) / best_ts_only) * 100
+  
+  if(best_with_regressors < best_ts_only) {
+    cat(sprintf("  → External regressors IMPROVED forecasting by %.2f%%\n\n", improvement))
+  } else {
+    cat(sprintf("  → Time series methods performed %.2f%% better\n\n", -improvement))
+  }
+}
+
+# Summary table
+cat("=== SUMMARY TABLE ===\n")
+summary_table <- map_dfr(seq_along(all_capabilities_results), function(i) {
+  result <- all_capabilities_results[[i]]
+  
+  best_ts_rmse <- min(result$accuracy$RMSE[result$accuracy$.model %in% c("drift_only", "arima_only", "ets_only")])
+  best_reg_rmse <- min(result$accuracy$RMSE[result$accuracy$.model %in% c("arima_gps", "arima_hr", "arima_combined")])
+  
+  tibble(
+    Capability = str_replace_all(result$capability, "_", " "),
+    Best_TS_RMSE = round(best_ts_rmse, 5),
+    Best_Regressor_RMSE = round(best_reg_rmse, 5),
+    Improvement = round(((best_ts_rmse - best_reg_rmse) / best_ts_rmse) * 100, 2),
+    External_Regressors_Better = best_reg_rmse < best_ts_rmse
+  )
+})
+
+print(summary_table)
+
+# Final conclusion
+regressors_win <- sum(summary_table$External_Regressors_Better)
+ts_win <- nrow(summary_table) - regressors_win
+
+cat(sprintf("\n=== OVERALL CONCLUSION ===\n"))
+cat(sprintf("External regressors improved forecasting: %d/%d capabilities\n", regressors_win, nrow(summary_table)))
+cat(sprintf("Time series methods performed better: %d/%d capabilities\n", ts_win, nrow(summary_table)))
+
+if(regressors_win > ts_win) {
+  cat("\nConclusion: GPS and HR data generally IMPROVE capability forecasting\n")
+} else if(ts_win > regressors_win) {
+  cat("\nConclusion: Individual temporal patterns generally outperform external predictors\n")
+} else {
+  cat("\nConclusion: Mixed results - capability-specific responses to external predictors\n")
+}
+
