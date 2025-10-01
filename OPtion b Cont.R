@@ -198,7 +198,7 @@ movement_summary <- daily_capability_granular %>%
     total_observations = n(),
     testing_days = n_distinct(date),
     avg_score = round(mean(daily_score), 3),
-    .groups = "drop"
+    .groups = "drop")
 
     
     

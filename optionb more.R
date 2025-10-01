@@ -535,3 +535,10 @@ if(regressors_win > ts_win) {
   cat("\nConclusion: Mixed results - capability-specific responses to external predictors\n")
 }
 
+
+
+
+
+
+####test whether it hr by itself or gps by itself or if they are combined or whats gps metrics inside the gps folder etc.getting messy!!!!
+
