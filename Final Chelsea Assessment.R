@@ -408,3 +408,225 @@ cat("- Best time series RMSE:", round(comp_accuracy$RMSE[1], 5), "\n")
 cat("- GPS predictor RMSE:", round(gps_comp_rmse, 5), "\n") 
 cat("- HR predictor RMSE:", round(hr_comp_rmse, 5), "\n")
 
+
+
+
+#Part 6: PLots
+
+# Capability distributions by movement type
+capability_dist_plot <- phys_cap %>%
+  separate(capability_id, into = c("movement", "quality", "expression"), sep = "_", remove = FALSE) %>%
+  ggplot(aes(x = benchmarkPct, fill = movement)) +
+  geom_histogram(bins = 30, alpha = 0.7) +
+  facet_wrap(~movement, scales = "free_y") +
+  labs(title = "Physical Capability Score Distributions by Movement Type",
+       subtitle = "9,839 observations across 20 capability combinations",
+       x = "Capability Score (% of baseline)", 
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        text = element_text(size = 12))
+
+print(capability_dist_plot)
+
+
+
+
+# Create publication-quality results table
+top_capabilities_plot <- results_with_movement %>%
+  head(10) %>%
+  mutate(capability_clean = str_replace_all(capability, "_", " "),
+         capability_clean = str_to_title(capability_clean)) %>%
+  ggplot(aes(x = reorder(capability_clean, -best_rmse), y = best_rmse, fill = movement)) +
+  geom_col(alpha = 0.8) +
+  coord_flip() +
+  labs(title = "Top 10 Most Predictable Physical Capabilities",
+       subtitle = "Lower RMSE = Better forecasting accuracy",
+       x = "Physical Capability", 
+       y = "RMSE (Root Mean Square Error)",
+       fill = "Movement Type") +
+  theme_minimal() +
+  theme(text = element_text(size = 12),
+        axis.text.y = element_text(size = 10))
+
+print(top_capabilities_plot)
+
+
+# Create the key comparison plot showing time series superiority
+comparison_plot <- external_results %>%
+  pivot_longer(cols = c(best_ts_rmse, gps_rmse, hr_rmse), 
+               names_to = "method", values_to = "rmse") %>%
+  mutate(method = case_when(
+    method == "best_ts_rmse" ~ "Time Series",
+    method == "gps_rmse" ~ "GPS Predictors", 
+    method == "hr_rmse" ~ "HR Predictors"
+  )) %>%
+  ggplot(aes(x = method, y = rmse, fill = method)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_point(position = position_jitter(width = 0.2), size = 2, alpha = 0.6) +
+  labs(title = "Forecasting Accuracy: Time Series vs External Predictors",
+       subtitle = "Time series methods consistently outperform GPS/HR predictors",
+       x = "Forecasting Method", 
+       y = "RMSE (Root Mean Square Error)") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        text = element_text(size = 12))
+
+print(comparison_plot)
+
+
+# Model effectiveness by movement type
+model_movement_plot <- results_with_movement %>%
+  count(movement, best_model) %>%
+  ggplot(aes(x = movement, y = n, fill = best_model)) +
+  geom_col(position = "fill") +
+  labs(title = "Model Preferences by Movement Type",
+       subtitle = "Different movement patterns require different forecasting approaches",
+       x = "Movement Type", 
+       y = "Proportion of Capabilities",
+       fill = "Best Model") +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(text = element_text(size = 12))
+
+print(model_movement_plot)
+
+
+# Create example forecast for jump takeoff capability
+jump_example <- recovery_data %>%
+  filter(capability_id == "jump_take off_dynamic") %>%
+  left_join(gps_hr_predictors, by = "match_date") %>%
+  arrange(date) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  fill(everything(), .direction = "down") %>%
+  filter(!is.na(daily_score)) %>%
+  as_tsibble(index = date) %>%
+  slice_tail(n = 60)  # Last 60 days for clean visualization
+
+# Fit model and forecast
+jump_fit <- jump_example %>%
+  model(drift = RW(daily_score ~ drift()))
+
+jump_forecast <- jump_fit %>%
+  forecast(h = 7)
+
+# Plot
+forecast_plot <- jump_forecast %>%
+  autoplot(jump_example) +
+  labs(title = "7-Day Capability Score Forecast Example",
+       subtitle = "Jump Takeoff Dynamic - Drift Model (RMSE: 0.00604)",
+       x = "Date", y = "Capability Score (% baseline)") +
+  theme_minimal()
+
+print(forecast_plot)
+
+
+# Create summary statistics table for presentation
+summary_stats <- tibble(
+  Method = c("Time Series (Best)", "GPS Predictors", "HR Predictors"),
+  `Average RMSE` = c(round(mean(external_results$best_ts_rmse), 4),
+                     round(mean(external_results$gps_rmse), 4),
+                     round(mean(external_results$hr_rmse), 4)),
+  `Improvement Factor` = c("1.0x (Baseline)", 
+                           paste0(round(mean(external_results$gps_rmse)/mean(external_results$best_ts_rmse), 1), "x worse"),
+                           paste0(round(mean(external_results$hr_rmse)/mean(external_results$best_ts_rmse), 1), "x worse"))
+)
+
+print(summary_stats)
+
+
+
+
+
+
+# Composite score time series with all three methods
+composite_comparison <- composite_ts_data %>%
+  slice_tail(n = 90) %>%  # Last 90 days
+  ggplot(aes(x = date, y = composite_score)) +
+  geom_line(size = 1, alpha = 0.7) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue", linetype = "dashed") +
+  labs(title = "Composite Capability Score Over Time",
+       subtitle = "Combined top 4 capabilities show predictable patterns",
+       x = "Date", y = "Composite Score") +
+  theme_minimal()
+
+print(composite_comparison)
+
+
+# Create composite time series plot
+composite_comparison <- composite_data %>%
+  slice_tail(n = 90) %>%  # Last 90 days
+  ggplot(aes(x = date, y = composite_score)) +
+  geom_line(size = 1, alpha = 0.7, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(title = "Composite Capability Score Over Time",
+       subtitle = "Combined top 4 capabilities show predictable patterns",
+       x = "Date", y = "Composite Score") +
+  theme_minimal()
+
+print(composite_comparison)
+
+
+# Seasonal patterns in capability scores
+seasonal_plot <- recovery_data %>%
+  mutate(month = month(date, label = TRUE)) %>%
+  ggplot(aes(x = month, y = daily_score)) +
+  geom_boxplot() +
+  facet_wrap(~str_extract(capability_id, "^[^_]+")) +
+  labs(title = "Seasonal Patterns in Capability Scores")
+print(seasonal_plot)
+
+
+# Individual capability recovery trajectories
+individual_recovery <- recovery_data %>%
+  group_by(capability_id, days_post_match) %>%
+  summarise(
+    mean_score = mean(daily_score, na.rm = TRUE),
+    n_obs = n(),
+    .groups = "drop"
+  ) %>%
+  # Only include capabilities with data for all 3 days
+  group_by(capability_id) %>%
+  filter(n() == 3) %>%
+  ungroup() %>%
+  # Clean up capability names for display
+  mutate(capability_clean = str_replace_all(capability_id, "_", " "),
+         capability_clean = str_to_title(capability_clean)) %>%
+  ggplot(aes(x = days_post_match, y = mean_score)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(color = "steelblue", size = 2) +
+  facet_wrap(~capability_clean, scales = "free_y") +
+  labs(title = "Post-Match Recovery by Individual Capability",
+       subtitle = "Mean capability scores across Days 1-3 post-match",
+       x = "Days Post-Match", y = "Capability Score (% baseline)") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+
+print(individual_recovery)
+
+
+# Four movement types only, averaged across all capabilities
+movement_recovery <- recovery_data %>%
+  separate(capability_id, into = c("movement", "quality", "expression"), sep = "_") %>%
+  group_by(movement, days_post_match) %>%
+  summarise(
+    mean_score = mean(daily_score, na.rm = TRUE),
+    se_score = sd(daily_score, na.rm = TRUE) / sqrt(n()),
+    n_obs = n(),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = days_post_match, y = mean_score)) +
+  geom_line(color = "steelblue", size = 1.5) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_ribbon(aes(ymin = mean_score - se_score, ymax = mean_score + se_score), 
+              alpha = 0.2, fill = "steelblue") +
+  facet_wrap(~str_to_title(movement), scales = "free_y") +
+  labs(title = "Post-Match Recovery by Movement Type",
+       subtitle = "Mean capability scores across Days 1-3 post-match",
+       x = "Days Post-Match", y = "Capability Score (% baseline)") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 12, face = "bold"))
+
+print(movement_recovery)
+
+
