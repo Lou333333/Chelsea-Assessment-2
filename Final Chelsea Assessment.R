@@ -3,8 +3,9 @@
 library(tidyverse)
 library(lubridate)
 library(fpp3)
+library(dplyr)
 
-# Load datasets
+# Load d# Load d# Load datasets
 gps <- read_csv("Data/CFC GPS Data.csv")
 phys_cap <- read_csv("Data/CFC Physical Capability Data_.csv")
 recovery <- read_csv("Data/CFC Recovery status Data.csv")
@@ -361,6 +362,104 @@ external_better <- sum(external_results$gps_rmse < external_results$best_ts_rmse
 cat("- GPS improved forecasting:", external_better, "out of", nrow(external_results), "top capabilities\n")
 
 
+
+#Part 4.5: ARIMA with External Regressors (GPS/HR Comparison) ====
+
+#Part 4.5: ARIMA with External Regressors (ALL CAPABILITIES) ====
+
+# Function to test ARIMA with GPS/HR external regressors (same as before)
+test_arima_xreg <- function(capability_name) {
+  
+  ts_data <- recovery_data %>%
+    filter(capability_id == capability_name) %>%
+    left_join(gps_hr_predictors, by = "match_date") %>%
+    arrange(date) %>%
+    complete(date = seq(min(date), max(date), by = "day")) %>%
+    fill(everything(), .direction = "down") %>%
+    filter(!is.na(daily_score)) %>%
+    as_tsibble(index = date)
+  
+  if(nrow(ts_data) < 100) return(NULL)
+  
+  split_point <- floor(nrow(ts_data) * 0.8)
+  split_date <- ts_data$date[split_point]
+  
+  train <- ts_data %>% filter(date <= split_date)
+  test <- ts_data %>% filter(date > split_date)
+  
+  ts_result <- all_results[[capability_name]]
+  best_ts_rmse <- ts_result$best_rmse
+  best_ts_model <- ts_result$best_model
+  
+  arima_gps_rmse <- tryCatch({
+    model_gps <- train %>% model(ARIMA(daily_score ~ distance_over_27))
+    forecast_gps <- model_gps %>% forecast(new_data = test)
+    accuracy(forecast_gps, test)$RMSE
+  }, error = function(e) {
+    cat("GPS model failed for", capability_name, "\n")
+    NA
+  })
+  
+  arima_hr_rmse <- tryCatch({
+    model_hr <- train %>% model(ARIMA(daily_score ~ hr_high_intensity))
+    forecast_hr <- model_hr %>% forecast(new_data = test)
+    accuracy(forecast_hr, test)$RMSE
+  }, error = function(e) {
+    cat("HR model failed for", capability_name, "\n")
+    NA
+  })
+  
+  return(tibble(
+    capability = capability_name,
+    best_ts_model = best_ts_model,
+    time_series_rmse = best_ts_rmse,
+    arima_gps_rmse = round(arima_gps_rmse, 5),
+    arima_hr_rmse = round(arima_hr_rmse, 5)
+  ))
+}
+
+# Test ALL 19 capabilities
+cat("\nTesting ARIMA with external regressors on ALL capabilities...\n")
+cat("This may take 2-3 minutes...\n\n")
+
+xreg_results_all <- map_dfr(capabilities_to_analyze, test_arima_xreg)
+xreg_results_all <- xreg_results_all %>% filter(!is.na(time_series_rmse))
+
+print(xreg_results_all)
+
+# Summary statistics
+cat("\n=== OVERALL RESULTS ===\n")
+cat("Capabilities tested:", nrow(xreg_results_all), "\n")
+cat("Average Time Series RMSE:", round(mean(xreg_results_all$time_series_rmse, na.rm = TRUE), 5), "\n")
+cat("Average ARIMA+GPS RMSE:", round(mean(xreg_results_all$arima_gps_rmse, na.rm = TRUE), 5), "\n")
+cat("Average ARIMA+HR RMSE:", round(mean(xreg_results_all$arima_hr_rmse, na.rm = TRUE), 5), "\n\n")
+
+gps_improvements_all <- sum(xreg_results_all$arima_gps_rmse < xreg_results_all$time_series_rmse, na.rm = TRUE)
+hr_improvements_all <- sum(xreg_results_all$arima_hr_rmse < xreg_results_all$time_series_rmse, na.rm = TRUE)
+
+cat("GPS improved forecasting:", gps_improvements_all, "out of", nrow(xreg_results_all), 
+    "(", round(100 * gps_improvements_all / nrow(xreg_results_all), 1), "%)\n")
+cat("HR improved forecasting:", hr_improvements_all, "out of", nrow(xreg_results_all), 
+    "(", round(100 * hr_improvements_all / nrow(xreg_results_all), 1), "%)\n\n")
+
+# Movement type breakdown
+movement_breakdown <- xreg_results_all %>%
+  separate(capability, into = c("movement", "quality", "expression"), sep = "_", remove = FALSE) %>%
+  group_by(movement) %>%
+  summarise(
+    n = n(),
+    ts_rmse = round(mean(time_series_rmse), 5),
+    gps_rmse = round(mean(arima_gps_rmse, na.rm = TRUE), 5),
+    hr_rmse = round(mean(arima_hr_rmse, na.rm = TRUE), 5),
+    gps_wins = sum(arima_gps_rmse < time_series_rmse, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("=== RESULTS BY MOVEMENT TYPE ===\n")
+print(movement_breakdown)
+
+
+
 #Part 5 ====
 # Create composite time series directly (not using the function)
 composite_ts_data <- composite_data %>%
@@ -453,26 +552,49 @@ print(top_capabilities_plot)
 
 
 # Create the key comparison plot showing time series superiority
-comparison_plot <- external_results %>%
-  pivot_longer(cols = c(best_ts_rmse, gps_rmse, hr_rmse), 
+# Enhanced comparison plot with TOP 5 CAPABILITIES ONLY
+comparison_plot_top5 <- xreg_results_all %>%
+  # Filter to top 5 capabilities only
+  filter(capability %in% top_5_caps) %>%
+  pivot_longer(cols = c(time_series_rmse, arima_gps_rmse, arima_hr_rmse), 
                names_to = "method", values_to = "rmse") %>%
   mutate(method = case_when(
-    method == "best_ts_rmse" ~ "Time Series",
-    method == "gps_rmse" ~ "GPS Predictors", 
-    method == "hr_rmse" ~ "HR Predictors"
+    method == "time_series_rmse" ~ "Time Series Only",
+    method == "arima_gps_rmse" ~ "ARIMA + GPS", 
+    method == "arima_hr_rmse" ~ "ARIMA + HR"
   )) %>%
-  ggplot(aes(x = method, y = rmse, fill = method)) +
-  geom_boxplot(alpha = 0.7) +
-  geom_point(position = position_jitter(width = 0.2), size = 2, alpha = 0.6) +
-  labs(title = "Forecasting Accuracy: Time Series vs External Predictors",
-       subtitle = "Time series methods consistently outperform GPS/HR predictors",
-       x = "Forecasting Method", 
-       y = "RMSE (Root Mean Square Error)") +
-  theme_minimal() +
-  theme(legend.position = "none",
-        text = element_text(size = 12))
+  mutate(method = factor(method, levels = c("Time Series Only", "ARIMA + GPS", "ARIMA + HR"))) %>%
+  filter(!is.na(rmse)) %>%
+  ggplot(aes(x = method, y = rmse)) +
+  geom_violin(aes(fill = method), alpha = 0.6, trim = FALSE) +
+  geom_boxplot(width = 0.2, fill = "white", alpha = 0.8) +
+  geom_jitter(size = 3, alpha = 0.6, width = 0.1) +  # Bigger points since only 5
+  stat_summary(fun = mean, geom = "point", size = 5, color = "black", shape = 18) +
+  scale_fill_manual(values = c("Time Series Only" = "#1f77b4", 
+                               "ARIMA + GPS" = "#ff7f0e", 
+                               "ARIMA + HR" = "#d62728")) +
 
-print(comparison_plot)
+  labs(title = "Time Series Methods Outperform External Predictors",
+       subtitle = "RMSE comparison: Top 5 most predictable capabilities",
+       x = "", 
+       y = "RMSE",
+       caption = "Lower = Better | Diamond = Mean | Each dot = one capability") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray50"),
+    axis.text.x = element_text(size = 12, face = "bold"),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    plot.caption = element_text(size = 9, hjust = 0.5, color = "gray50", margin = margin(t = 10)),
+    panel.grid.major.x = element_blank()
+  )
+
+print(comparison_plot_top5)
+
+
+
 
 
 # Model effectiveness by movement type
@@ -616,8 +738,8 @@ movement_recovery <- recovery_data %>%
     .groups = "drop"
   ) %>%
   ggplot(aes(x = days_post_match, y = mean_score)) +
-  geom_line(color = "steelblue", size = 1.5) +
-  geom_point(color = "steelblue", size = 3) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(color = "steelblue", size = 1.5) +
   geom_ribbon(aes(ymin = mean_score - se_score, ymax = mean_score + se_score), 
               alpha = 0.2, fill = "steelblue") +
   facet_wrap(~str_to_title(movement), scales = "free_y") +
