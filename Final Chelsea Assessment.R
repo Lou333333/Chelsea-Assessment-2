@@ -979,5 +979,148 @@ print(movement_recovery)
 
 
 
+###ACF TESTING INCLUDE OR NOT? Model diagnostics confirm adequate fit (ACF analysis shows white noise residuals)
+###WEEK 9 teachings 
 
 
+
+# ===================================================================
+# RESIDUAL DIAGNOSTICS USING WORKSHOP 9 METHODS
+# (ACF plots to check for white noise - exactly as taught in class)
+# ===================================================================
+
+library(tidyverse)
+library(fpp3)
+
+# ===================================================================
+# CAPABILITY 1: Jump Take Off Dynamic
+# ===================================================================
+
+# Get residuals from the fitted model
+residuals1 <- augment(best_model1)
+
+# Plot 1: Residuals over time (check for patterns)
+p1 <- residuals1 %>%
+  ggplot(aes(x = date, y = .innov)) +
+  geom_line() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Jump Take Off: Residuals Over Time",
+       subtitle = "Should look random with no patterns",
+       y = "Residuals", x = "Date") +
+  theme_minimal()
+
+print(p1)
+
+# Plot 2: ACF of residuals (Workshop 9 method - check for white noise)
+p2 <- residuals1 %>%
+  ACF(.innov) %>%
+  autoplot() +
+  labs(title = "Jump Take Off: ACF of Residuals",
+       subtitle = "If white noise, most bars should be within blue lines") +
+  theme_minimal()
+
+print(p2)
+
+# Plot 3: Histogram of residuals (check for normality)
+p3 <- residuals1 %>%
+  ggplot(aes(x = .innov)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Jump Take Off: Histogram of Residuals",
+       subtitle = "Should look roughly bell-shaped",
+       x = "Residuals", y = "Count") +
+  theme_minimal()
+
+print(p3)
+
+# Calculate basic statistics (like Workshop 9)
+cat("\n=== Jump Take Off Dynamic - Residual Statistics ===\n")
+cat("Mean of residuals:", round(mean(residuals1$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
+cat("SD of residuals:", round(sd(residuals1$.innov, na.rm = TRUE), 6), "\n")
+cat("Range:", round(min(residuals1$.innov, na.rm = TRUE), 4), "to", round(max(residuals1$.innov, na.rm = TRUE), 4), "\n\n")
+
+# ===================================================================
+# CAPABILITY 2: Sprint Max Velocity Dynamic
+# ===================================================================
+
+# Get residuals
+residuals2 <- augment(best_model2)
+
+# Plot 1: Residuals over time
+p4 <- residuals2 %>%
+  ggplot(aes(x = date, y = .innov)) +
+  geom_line() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Sprint Max Velocity: Residuals Over Time",
+       y = "Residuals", x = "Date") +
+  theme_minimal()
+
+print(p4)
+
+# Plot 2: ACF of residuals
+p5 <- residuals2 %>%
+  ACF(.innov) %>%
+  autoplot() +
+  labs(title = "Sprint Max Velocity: ACF of Residuals") +
+  theme_minimal()
+
+print(p5)
+
+# Plot 3: Histogram
+p6 <- residuals2 %>%
+  ggplot(aes(x = .innov)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Sprint Max Velocity: Histogram of Residuals",
+       x = "Residuals", y = "Count") +
+  theme_minimal()
+
+print(p6)
+
+cat("\n=== Sprint Max Velocity - Residual Statistics ===\n")
+cat("Mean of residuals:", round(mean(residuals2$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
+cat("SD of residuals:", round(sd(residuals2$.innov, na.rm = TRUE), 6), "\n")
+cat("Range:", round(min(residuals2$.innov, na.rm = TRUE), 4), "to", round(max(residuals2$.innov, na.rm = TRUE), 4), "\n\n")
+
+# ===================================================================
+# CAPABILITY 3: Upper Body Push Dynamic
+# ===================================================================
+
+# Get residuals
+residuals3 <- augment(best_model3)
+
+# Plot 1: Residuals over time
+p7 <- residuals3 %>%
+  ggplot(aes(x = date, y = .innov)) +
+  geom_line() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Upper Body Push: Residuals Over Time",
+       y = "Residuals", x = "Date") +
+  theme_minimal()
+
+print(p7)
+
+# Plot 2: ACF of residuals
+p8 <- residuals3 %>%
+  ACF(.innov) %>%
+  autoplot() +
+  labs(title = "Upper Body Push: ACF of Residuals") +
+  theme_minimal()
+
+print(p8)
+
+# Plot 3: Histogram
+p9 <- residuals3 %>%
+  ggplot(aes(x = .innov)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Upper Body Push: Histogram of Residuals",
+       x = "Residuals", y = "Count") +
+  theme_minimal()
+
+print(p9)
+
+cat("\n=== Upper Body Push - Residual Statistics ===\n")
+cat("Mean of residuals:", round(mean(residuals3$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
+cat("SD of residuals:", round(sd(residuals3$.innov, na.rm = TRUE), 6), "\n")
+cat("Range:", round(min(residuals3$.innov, na.rm = TRUE), 4), "to", round(max(residuals3$.innov, na.rm = TRUE), 4), "\n\n")
