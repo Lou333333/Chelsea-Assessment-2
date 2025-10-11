@@ -175,14 +175,16 @@ gps_hr_predictors <- overlap_matches %>%
          peak_speed, day_duration,
          hr_zone_1_hms, hr_zone_2_hms, hr_zone_3_hms, hr_zone_4_hms, hr_zone_5_hms) %>%
   mutate(
-    # Convert HR zones to minutes
+    # Convert ALL HR zones to minutes
+    hr_zone_1_min = as.numeric(hr_zone_1_hms) / 60,
+    hr_zone_2_min = as.numeric(hr_zone_2_hms) / 60,
+    hr_zone_3_min = as.numeric(hr_zone_3_hms) / 60,
     hr_zone_4_min = as.numeric(hr_zone_4_hms) / 60,
     hr_zone_5_min = as.numeric(hr_zone_5_hms) / 60,
     hr_high_intensity = hr_zone_4_min + hr_zone_5_min
   ) %>%
   select(-ends_with("_hms")) %>%
   rename(match_date = date)
-
 # Check predictor summary
 summary(gps_hr_predictors %>% select(distance_over_27, accel_decel_over_3_5, hr_high_intensity))
 
@@ -458,7 +460,223 @@ movement_breakdown <- xreg_results_all %>%
 cat("=== RESULTS BY MOVEMENT TYPE ===\n")
 print(movement_breakdown)
 
+##############4.5 again
 
+
+#Part 4.5: ARIMA with ALL GPS/HR External Regressors ====
+
+test_arima_all_predictors <- function(capability_name) {
+  
+  ts_data <- recovery_data %>%
+    filter(capability_id == capability_name) %>%
+    left_join(gps_hr_predictors, by = "match_date") %>%
+    arrange(date) %>%
+    complete(date = seq(min(date), max(date), by = "day")) %>%
+    fill(everything(), .direction = "down") %>%
+    filter(!is.na(daily_score)) %>%
+    as_tsibble(index = date)
+  
+  if(nrow(ts_data) < 100) return(NULL)
+  
+  split_point <- floor(nrow(ts_data) * 0.8)
+  train <- ts_data %>% slice(1:split_point)
+  test <- ts_data %>% slice((split_point+1):n())
+  
+  # Get baseline time series RMSE
+  ts_result <- all_results[[capability_name]]
+  best_ts_rmse <- ts_result$best_rmse
+  
+  # Helper function to test a predictor
+  test_predictor <- function(formula_str) {
+    tryCatch({
+      model <- train %>% model(ARIMA(as.formula(formula_str)))
+      forecast_result <- model %>% forecast(new_data = test)
+      accuracy(forecast_result, test)$RMSE
+    }, error = function(e) NA)
+  }
+  
+  # Test ALL GPS distance metrics
+  dist_total <- test_predictor("daily_score ~ distance")
+  dist_21 <- test_predictor("daily_score ~ distance_over_21")
+  dist_24 <- test_predictor("daily_score ~ distance_over_24")
+  dist_27 <- test_predictor("daily_score ~ distance_over_27")
+  
+  # Test ALL acceleration/deceleration metrics
+  accel_25 <- test_predictor("daily_score ~ accel_decel_over_2_5")
+  accel_35 <- test_predictor("daily_score ~ accel_decel_over_3_5")
+  accel_45 <- test_predictor("daily_score ~ accel_decel_over_4_5")
+  
+  # Test other GPS metrics
+  peak_spd <- test_predictor("daily_score ~ peak_speed")
+  duration <- test_predictor("daily_score ~ day_duration")
+  
+  # Test ALL HR zone metrics (need to convert from hms to minutes first if not already done)
+  # Using the minutes versions you created
+  hr_z1 <- test_predictor("daily_score ~ hr_zone_1_min")
+  hr_z2 <- test_predictor("daily_score ~ hr_zone_2_min")
+  hr_z3 <- test_predictor("daily_score ~ hr_zone_3_min")
+  hr_z4 <- test_predictor("daily_score ~ hr_zone_4_min")
+  hr_z5 <- test_predictor("daily_score ~ hr_zone_5_min")
+  hr_high <- test_predictor("daily_score ~ hr_high_intensity")
+  
+  return(tibble(
+    capability = capability_name,
+    time_series = best_ts_rmse,
+    # Distance metrics (4)
+    gps_total_dist = round(dist_total, 5),
+    gps_dist_21 = round(dist_21, 5),
+    gps_dist_24 = round(dist_24, 5),
+    gps_dist_27 = round(dist_27, 5),
+    # Accel/Decel metrics (3)
+    gps_accel_25 = round(accel_25, 5),
+    gps_accel_35 = round(accel_35, 5),
+    gps_accel_45 = round(accel_45, 5),
+    # Other GPS (2)
+    gps_peak_speed = round(peak_spd, 5),
+    gps_duration = round(duration, 5),
+    # ALL HR zones (6)
+    hr_zone_1 = round(hr_z1, 5),
+    hr_zone_2 = round(hr_z2, 5),
+    hr_zone_3 = round(hr_z3, 5),
+    hr_zone_4 = round(hr_z4, 5),
+    hr_zone_5 = round(hr_z5, 5),
+    hr_zones_45 = round(hr_high, 5)
+  ))
+}
+
+# Run on top 5 capabilities
+cat("\n========================================\n")
+cat("Testing ALL 17 GPS/HR metrics individually\n")
+cat("========================================\n\n")
+
+all_predictors_results <- map_dfr(capabilities_to_analyze, test_arima_all_predictors)
+print(all_predictors_results)
+
+# Calculate average RMSE for each predictor
+cat("\n=== AVERAGE RMSE BY PREDICTOR (RANKED) ===\n")
+avg_rmse <- all_predictors_results %>%
+  summarise(across(time_series:hr_zones_45, ~mean(., na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "predictor", values_to = "avg_rmse") %>%
+  arrange(avg_rmse)
+print(avg_rmse)
+
+# Count wins for each predictor
+cat("\n=== HOW MANY TIMES EACH PREDICTOR BEAT TIME SERIES ===\n")
+wins_count <- all_predictors_results %>%
+  summarise(
+    gps_total_dist = sum(gps_total_dist < time_series, na.rm = TRUE),
+    gps_dist_21 = sum(gps_dist_21 < time_series, na.rm = TRUE),
+    gps_dist_24 = sum(gps_dist_24 < time_series, na.rm = TRUE),
+    gps_dist_27 = sum(gps_dist_27 < time_series, na.rm = TRUE),
+    gps_accel_25 = sum(gps_accel_25 < time_series, na.rm = TRUE),
+    gps_accel_35 = sum(gps_accel_35 < time_series, na.rm = TRUE),
+    gps_accel_45 = sum(gps_accel_45 < time_series, na.rm = TRUE),
+    gps_peak_speed = sum(gps_peak_speed < time_series, na.rm = TRUE),
+    gps_duration = sum(gps_duration < time_series, na.rm = TRUE),
+    hr_zone_1 = sum(hr_zone_1 < time_series, na.rm = TRUE),
+    hr_zone_2 = sum(hr_zone_2 < time_series, na.rm = TRUE),
+    hr_zone_3 = sum(hr_zone_3 < time_series, na.rm = TRUE),
+    hr_zone_4 = sum(hr_zone_4 < time_series, na.rm = TRUE),
+    hr_zone_5 = sum(hr_zone_5 < time_series, na.rm = TRUE),
+    hr_zones_45 = sum(hr_zones_45 < time_series, na.rm = TRUE)
+  ) %>%
+  pivot_longer(everything(), names_to = "predictor", values_to = "wins") %>%
+  arrange(desc(wins))
+
+print(wins_count)
+
+# Identify the "winners" (predictors that won at least once)
+cat("\n=== PREDICTORS THAT WON AT LEAST ONCE ===\n")
+winners <- wins_count %>% filter(wins > 0)
+print(winners)
+
+cat("\n=== SUMMARY ===\n")
+cat("Total capabilities tested:", nrow(all_predictors_results), "\n")
+cat("Total predictors tested: 17\n")
+cat("Time Series baseline RMSE:", round(mean(all_predictors_results$time_series), 5), "\n")
+cat("\nBest performing external predictor (lowest avg RMSE):\n")
+print(head(avg_rmse, 1))
+cat("\nPredictor that won most often:\n")
+print(head(wins_count, 1))
+cat("\nNumber of predictors that beat time series at least once:", nrow(winners), "\n")
+
+#Part 4.6: Combined GPS/HR Model ====
+
+test_combined_predictors <- function(capability_name) {
+  
+  ts_data <- recovery_data %>%
+    filter(capability_id == capability_name) %>%
+    left_join(gps_hr_predictors, by = "match_date") %>%
+    arrange(date) %>%
+    complete(date = seq(min(date), max(date), by = "day")) %>%
+    fill(everything(), .direction = "down") %>%
+    filter(!is.na(daily_score)) %>%
+    as_tsibble(index = date)
+  
+  if(nrow(ts_data) < 100) return(NULL)
+  
+  split_point <- floor(nrow(ts_data) * 0.8)
+  train <- ts_data %>% slice(1:split_point)
+  test <- ts_data %>% slice((split_point+1):n())
+  
+  ts_result <- all_results[[capability_name]]
+  best_ts_rmse <- ts_result$best_rmse
+  
+  # Best single predictor
+  best_single <- all_predictors_results %>%
+    filter(capability == capability_name) %>%
+    select(gps_dist_27) %>%
+    pull()
+  
+  # Test combined model: Top 3 predictors
+  combined_rmse <- tryCatch({
+    model <- train %>% model(
+      ARIMA(daily_score ~ distance_over_27 + distance_over_24 + accel_decel_over_4_5)
+    )
+    forecast_result <- model %>% forecast(new_data = test)
+    accuracy(forecast_result, test)$RMSE
+  }, error = function(e) NA)
+  
+  # Test combined with HR too
+  combined_hr_rmse <- tryCatch({
+    model <- train %>% model(
+      ARIMA(daily_score ~ distance_over_27 + hr_high_intensity)
+    )
+    forecast_result <- model %>% forecast(new_data = test)
+    accuracy(forecast_result, test)$RMSE
+  }, error = function(e) NA)
+  
+  return(tibble(
+    capability = capability_name,
+    time_series = best_ts_rmse,
+    best_single = round(best_single, 5),
+    combined_gps = round(combined_rmse, 5),
+    combined_gps_hr = round(combined_hr_rmse, 5)
+  ))
+}
+
+# Test combined models
+cat("\n=== TESTING COMBINED PREDICTORS ===\n")
+combined_results <- map_dfr(capabilities_to_analyze, test_combined_predictors)
+print(combined_results)
+
+# Summary
+cat("\n=== COMBINED MODEL RESULTS ===\n")
+cat("Time Series avg:", round(mean(combined_results$time_series), 5), "\n")
+cat("Best Single avg:", round(mean(combined_results$best_single, na.rm = TRUE), 5), "\n")
+cat("Combined GPS avg:", round(mean(combined_results$combined_gps, na.rm = TRUE), 5), "\n")
+cat("Combined GPS+HR avg:", round(mean(combined_results$combined_gps_hr, na.rm = TRUE), 5), "\n\n")
+
+cat("Combined GPS better than single:", 
+    sum(combined_results$combined_gps < combined_results$best_single, na.rm = TRUE), 
+    "out of", nrow(combined_results), "\n")
+cat("Combined GPS better than time series:", 
+    sum(combined_results$combined_gps < combined_results$time_series, na.rm = TRUE), 
+    "out of", nrow(combined_results), "\n")
+
+####################
+
+#Part 5 ====
 
 #Part 5 ====
 # Create composite time series directly (not using the function)
@@ -492,15 +710,14 @@ comp_accuracy <- comp_forecasts %>% accuracy(test_comp) %>% arrange(RMSE)
 
 print(comp_accuracy)
 
+# Test GPS/HR predictors on composite score using ARIMA
+gps_comp_model <- train_comp %>% model(ARIMA(composite_score ~ distance_over_27))
+gps_comp_forecast <- gps_comp_model %>% forecast(new_data = test_comp)
+gps_comp_rmse <- accuracy(gps_comp_forecast, test_comp)$RMSE
 
-# Test GPS/HR predictors on composite score
-gps_comp_model <- lm(composite_score ~ distance_over_27 + days_post_match, data = train_comp)
-gps_comp_pred <- predict(gps_comp_model, test_comp)
-gps_comp_rmse <- sqrt(mean((test_comp$composite_score - gps_comp_pred)^2, na.rm = TRUE))
-
-hr_comp_model <- lm(composite_score ~ hr_high_intensity + days_post_match, data = train_comp)
-hr_comp_pred <- predict(hr_comp_model, test_comp)
-hr_comp_rmse <- sqrt(mean((test_comp$composite_score - hr_comp_pred)^2, na.rm = TRUE))
+hr_comp_model <- train_comp %>% model(ARIMA(composite_score ~ hr_high_intensity))
+hr_comp_forecast <- hr_comp_model %>% forecast(new_data = test_comp)
+hr_comp_rmse <- accuracy(hr_comp_forecast, test_comp)$RMSE
 
 cat("Composite Results:\n")
 cat("- Best time series RMSE:", round(comp_accuracy$RMSE[1], 5), "\n")
@@ -560,25 +777,24 @@ comparison_plot_top5 <- xreg_results_all %>%
                names_to = "method", values_to = "rmse") %>%
   mutate(method = case_when(
     method == "time_series_rmse" ~ "Time Series Only",
-    method == "arima_gps_rmse" ~ "ARIMA + GPS", 
-    method == "arima_hr_rmse" ~ "ARIMA + HR"
+    method == "arima_gps_rmse" ~ "ARIMA + Best GPS", 
+    method == "arima_hr_rmse" ~ "ARIMA + Best HR"
   )) %>%
-  mutate(method = factor(method, levels = c("Time Series Only", "ARIMA + GPS", "ARIMA + HR"))) %>%
+  mutate(method = factor(method, levels = c("Time Series Only", "ARIMA + Best GPS", "ARIMA + Best HR"))) %>%
   filter(!is.na(rmse)) %>%
   ggplot(aes(x = method, y = rmse)) +
   geom_violin(aes(fill = method), alpha = 0.6, trim = FALSE) +
   geom_boxplot(width = 0.2, fill = "white", alpha = 0.8) +
-  geom_jitter(size = 3, alpha = 0.6, width = 0.1) +  # Bigger points since only 5
+  geom_jitter(size = 3, alpha = 0.6, width = 0.1) +
   stat_summary(fun = mean, geom = "point", size = 5, color = "black", shape = 18) +
   scale_fill_manual(values = c("Time Series Only" = "#1f77b4", 
-                               "ARIMA + GPS" = "#ff7f0e", 
-                               "ARIMA + HR" = "#d62728")) +
-
+                               "ARIMA + Best GPS" = "#ff7f0e", 
+                               "ARIMA + Best HR" = "#d62728")) +
   labs(title = "Time Series Methods Outperform External Predictors",
-       subtitle = "RMSE comparison: Top 5 most predictable capabilities",
+       subtitle = "Comprehensive test: 17 GPS/HR metrics across top 5 capabilities",
        x = "", 
        y = "RMSE",
-       caption = "Lower = Better | Diamond = Mean | Each dot = one capability") +
+       caption = "Lower = Better | Diamond = Mean | Best single predictor shown per capability") +
   theme_minimal(base_size = 14) +
   theme(
     legend.position = "none",
@@ -587,10 +803,9 @@ comparison_plot_top5 <- xreg_results_all %>%
     axis.text.x = element_text(size = 12, face = "bold"),
     axis.text.y = element_text(size = 10),
     axis.title.y = element_text(size = 12, face = "bold"),
-    plot.caption = element_text(size = 9, hjust = 0.5, color = "gray50", margin = margin(t = 10)),
+    plot.caption = element_text(size = 8.5, hjust = 0.5, color = "gray50", margin = margin(t = 10)),
     panel.grid.major.x = element_blank()
   )
-
 print(comparison_plot_top5)
 
 
@@ -679,13 +894,16 @@ print(composite_comparison)
 composite_comparison <- composite_data %>%
   slice_tail(n = 90) %>%  # Last 90 days
   ggplot(aes(x = date, y = composite_score)) +
-  geom_line(size = 1, alpha = 0.7, color = "steelblue") +
+  geom_line(linewidth = 1, alpha = 0.7, color = "steelblue") +  # Changed size to linewidth
   geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
   labs(title = "Composite Capability Score Over Time",
-       subtitle = "Combined top 4 capabilities show predictable patterns",
-       x = "Date", y = "Composite Score") +
-  theme_minimal()
-
+       subtitle = "Combined top 4 capabilities show predictable temporal patterns",
+       x = "Date", y = "Composite Score (% baseline)") +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(size = 15, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray50")
+  )
 print(composite_comparison)
 
 
@@ -750,5 +968,16 @@ movement_recovery <- recovery_data %>%
   theme(strip.text = element_text(size = 12, face = "bold"))
 
 print(movement_recovery)
+
+
+
+
+
+
+
+
+
+
+
 
 
