@@ -581,7 +581,7 @@ cat("\nComposite readiness dataset created:\n")
 cat("Observations:", nrow(composite_data), "\n")
 
 
-# Create composite time series directly (not using the function)
+# Create composite time series directly
 composite_ts_data <- composite_data %>%
   left_join(gps_hr_predictors, by = "match_date") %>%
   arrange(date) %>%
@@ -786,6 +786,7 @@ print(multi_accuracy_jump)
 multi_forecast_plot <- multi_forecast_jump %>%
   autoplot(train_jump, level = c(80,95)) +
   geom_line(data = test_jump, aes(x = date, y = daily_score), color = "black", size = 0.8, alpha = 0.7) +
+  guides(fill = "none") +
   labs(
     title = "Multi-Model Forecast Comparison: Jump Takeoff Dynamic",
     subtitle = "Training data + 7-day forecast vs Actual (black line)",
@@ -802,36 +803,6 @@ multi_forecast_plot <- multi_forecast_jump %>%
 print(multi_forecast_plot)
 
 report(multi_model_jump)
-
-
-
-#they hide each other 
-
-
-multi_forecast_plot <- multi_forecast_jump %>%
-  autoplot(train_jump, level = c(80, 95), alpha = 0.5) +  # transparency for ribbons
-  geom_line(data = test_jump, aes(x = date, y = daily_score),
-            color = "black", size = 0.8, alpha = 0.7) +
-  scale_color_manual(values = c(
-    "ARIMA" = "#E64B35FF", 
-    "Drift" = "#00A087FF", 
-    "ETS" = "#3C5488FF"
-  )) +
-  guides(fill = "none") +
-  labs(
-    title = "Multi-Model Forecast Comparison: Jump Takeoff Dynamic",
-    subtitle = "Training data + 7-day forecast vs Actual (black line)",
-    x = "Date",
-    y = "Capability Score (% baseline)",
-    color = "Model"
-  ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    legend.position = "top",
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
-  )
-print(multi_forecast_plot)
 
 
 
@@ -1007,6 +978,29 @@ composite_comparison <- composite_ts_data %>%
 
 print(composite_comparison)
 
+#for all 19
+all19_summary <- all_predictors_results %>%
+  summarise(
+    time_series_avg = mean(time_series, na.rm = TRUE),
+    gps_best_avg = mean(gps_dist_27, na.rm = TRUE), 
+    hr_best_avg = mean(hr_zones_45, na.rm = TRUE)
+  )
+
+# Create comparison table for ALL 19 (NEW)
+summary_stats_all19 <- tibble(
+  Method = c("Time Series (Best)", "GPS Predictors", "HR Predictors"),
+  `Average RMSE` = c(round(all19_summary$time_series_avg, 4),
+                     round(all19_summary$gps_best_avg, 4),
+                     round(all19_summary$hr_best_avg, 4)),
+  `Improvement Factor` = c("1.0x (Baseline)", 
+                           paste0(round(all19_summary$gps_best_avg/all19_summary$time_series_avg, 1), "x worse"),
+                           paste0(round(all19_summary$hr_best_avg/all19_summary$time_series_avg, 1), "x worse")),
+  Dataset = "All 19 Capabilities"
+)
+
+print(summary_stats_all19)
+
+
 
 # Create composite time series plot
 composite_comparison <- composite_data %>%
@@ -1172,5 +1166,59 @@ comparison_framework <- ggplot(framework_data, aes(x = x, y = y)) +
   )
 
 print(comparison_framework)
+
+
+
+
+
+
+#Part 5.7: MULTIPLE FORECAST EXAMPLES ====
+library(patchwork)
+
+# Function to create forecast for any capability
+create_forecast_viz <- function(cap_name, model_type, h = 7) {
+  
+  ts_data <- recovery_data %>%
+    filter(capability_id == cap_name) %>%
+    left_join(gps_hr_predictors, by = "match_date") %>%
+    arrange(date) %>%
+    complete(date = seq(min(date), max(date), by = "day")) %>%
+    fill(everything(), .direction = "down") %>%
+    filter(!is.na(daily_score)) %>%
+    as_tsibble(index = date)
+  
+  # Fit model
+  fit <- ts_data %>%
+    model(
+      model = if(model_type == "drift") RW(daily_score ~ drift()) 
+      else ARIMA(daily_score)
+    )
+  
+  # Forecast
+  fc <- fit %>% forecast(h = h)
+  
+  # Plot last 60 days + forecast
+  fc %>%
+    autoplot(ts_data %>% filter(date > max(date) - 60), level = c(80, 95)) +
+    labs(title = str_replace_all(cap_name, "_", " ") %>% str_to_title(),
+         subtitle = paste(model_type, "model"),
+         x = "", y = "Score") +
+    theme_minimal(base_size = 10)
+}
+
+# Create 3 examples
+p1 <- create_forecast_viz("jump_take off_dynamic", "drift")
+p2 <- create_forecast_viz("sprint_max velocity_dynamic", "drift") 
+p3 <- create_forecast_viz("agility_deceleration_dynamic", "arima")
+
+# Combine
+combined_forecasts <- (p1 | p2 | p3) +
+  plot_annotation(
+    title = "7-Day Capability Forecasts Across Movement Types",
+    subtitle = "80% and 95% prediction intervals shown",
+    theme = theme(plot.title = element_text(face = "bold", hjust = 0.5))
+  )
+
+print(combined_forecasts)
 
 
