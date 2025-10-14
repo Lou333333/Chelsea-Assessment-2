@@ -257,6 +257,9 @@ test_result$best_model
 test_result$best_rmse
 
 
+
+
+
 #Part 4 ====
 # Get all capabilities with sufficient data (from recovery_summary)
 capabilities_to_analyze <- recovery_summary %>%
@@ -301,54 +304,6 @@ results_with_movement %>%
   pivot_wider(names_from = best_model, values_from = n, values_fill = 0)
 
 
-# Function to test GPS/HR predictors against time series
-test_external_predictors <- function(capability_name) {
-  
-  # Get the time series data
-  ts_data <- recovery_data %>%
-    filter(capability_id == capability_name) %>%
-    left_join(gps_hr_predictors, by = "match_date") %>%
-    arrange(date) %>%
-    complete(date = seq(min(date), max(date), by = "day")) %>%
-    fill(everything(), .direction = "down") %>%
-    filter(!is.na(daily_score)) %>%
-    as_tsibble(index = date)
-  
-  # Train/test split
-  split_point <- floor(nrow(ts_data) * 0.8)
-  split_date <- ts_data$date[split_point]
-  
-  train <- ts_data %>% filter(date <= split_date)
-  test <- ts_data %>% filter(date > split_date)
-  
-  # Get best time series RMSE
-  ts_result <- all_results[[capability_name]]
-  best_ts_rmse <- ts_result$best_rmse
-  
-  # Test GPS predictor
-  gps_model <- lm(daily_score ~ distance_over_27 + days_post_match, data = train)
-  gps_pred <- predict(gps_model, test)
-  gps_rmse <- sqrt(mean((test$daily_score - gps_pred)^2, na.rm = TRUE))
-  
-  # Test HR predictor
-  hr_model <- lm(daily_score ~ hr_high_intensity + days_post_match, data = train)
-  hr_pred <- predict(hr_model, test)
-  hr_rmse <- sqrt(mean((test$daily_score - hr_pred)^2, na.rm = TRUE))
-  
-  return(tibble(
-    capability = capability_name,
-    best_ts_rmse = best_ts_rmse,
-    gps_rmse = round(gps_rmse, 5),
-    hr_rmse = round(hr_rmse, 5)
-  ))
-}
-
-# Test on top 5 best-performing capabilities
-top_5_caps <- head(results_with_movement$capability, 5)
-external_results <- map_dfr(top_5_caps, test_external_predictors)
-print(external_results)
-
-
 # Calculate summary statistics
 cat("Phase 4 Results Summary:\n")
 cat("- Capabilities analyzed:", nrow(results_summary), "\n")
@@ -359,108 +314,6 @@ cat("- Best capability:", results_with_movement$capability[1], "RMSE:", results_
 model_counts <- table(results_summary$best_model)
 cat("- Model preferences: Drift =", model_counts["drift"], ", ARIMA =", model_counts["arima"], ", ETS =", model_counts["ets"], "\n")
 
-# External predictor effectiveness
-external_better <- sum(external_results$gps_rmse < external_results$best_ts_rmse)
-cat("- GPS improved forecasting:", external_better, "out of", nrow(external_results), "top capabilities\n")
-
-
-
-#Part 4.5: ARIMA with External Regressors (GPS/HR Comparison) ====
-
-#Part 4.5: ARIMA with External Regressors (ALL CAPABILITIES) ====
-
-# Function to test ARIMA with GPS/HR external regressors (same as before)
-test_arima_xreg <- function(capability_name) {
-  
-  ts_data <- recovery_data %>%
-    filter(capability_id == capability_name) %>%
-    left_join(gps_hr_predictors, by = "match_date") %>%
-    arrange(date) %>%
-    complete(date = seq(min(date), max(date), by = "day")) %>%
-    fill(everything(), .direction = "down") %>%
-    filter(!is.na(daily_score)) %>%
-    as_tsibble(index = date)
-  
-  if(nrow(ts_data) < 100) return(NULL)
-  
-  split_point <- floor(nrow(ts_data) * 0.8)
-  split_date <- ts_data$date[split_point]
-  
-  train <- ts_data %>% filter(date <= split_date)
-  test <- ts_data %>% filter(date > split_date)
-  
-  ts_result <- all_results[[capability_name]]
-  best_ts_rmse <- ts_result$best_rmse
-  best_ts_model <- ts_result$best_model
-  
-  arima_gps_rmse <- tryCatch({
-    model_gps <- train %>% model(ARIMA(daily_score ~ distance_over_27))
-    forecast_gps <- model_gps %>% forecast(new_data = test)
-    accuracy(forecast_gps, test)$RMSE
-  }, error = function(e) {
-    cat("GPS model failed for", capability_name, "\n")
-    NA
-  })
-  
-  arima_hr_rmse <- tryCatch({
-    model_hr <- train %>% model(ARIMA(daily_score ~ hr_high_intensity))
-    forecast_hr <- model_hr %>% forecast(new_data = test)
-    accuracy(forecast_hr, test)$RMSE
-  }, error = function(e) {
-    cat("HR model failed for", capability_name, "\n")
-    NA
-  })
-  
-  return(tibble(
-    capability = capability_name,
-    best_ts_model = best_ts_model,
-    time_series_rmse = best_ts_rmse,
-    arima_gps_rmse = round(arima_gps_rmse, 5),
-    arima_hr_rmse = round(arima_hr_rmse, 5)
-  ))
-}
-
-# Test ALL 19 capabilities
-cat("\nTesting ARIMA with external regressors on ALL capabilities...\n")
-cat("This may take 2-3 minutes...\n\n")
-
-xreg_results_all <- map_dfr(capabilities_to_analyze, test_arima_xreg)
-xreg_results_all <- xreg_results_all %>% filter(!is.na(time_series_rmse))
-
-print(xreg_results_all)
-
-# Summary statistics
-cat("\n=== OVERALL RESULTS ===\n")
-cat("Capabilities tested:", nrow(xreg_results_all), "\n")
-cat("Average Time Series RMSE:", round(mean(xreg_results_all$time_series_rmse, na.rm = TRUE), 5), "\n")
-cat("Average ARIMA+GPS RMSE:", round(mean(xreg_results_all$arima_gps_rmse, na.rm = TRUE), 5), "\n")
-cat("Average ARIMA+HR RMSE:", round(mean(xreg_results_all$arima_hr_rmse, na.rm = TRUE), 5), "\n\n")
-
-gps_improvements_all <- sum(xreg_results_all$arima_gps_rmse < xreg_results_all$time_series_rmse, na.rm = TRUE)
-hr_improvements_all <- sum(xreg_results_all$arima_hr_rmse < xreg_results_all$time_series_rmse, na.rm = TRUE)
-
-cat("GPS improved forecasting:", gps_improvements_all, "out of", nrow(xreg_results_all), 
-    "(", round(100 * gps_improvements_all / nrow(xreg_results_all), 1), "%)\n")
-cat("HR improved forecasting:", hr_improvements_all, "out of", nrow(xreg_results_all), 
-    "(", round(100 * hr_improvements_all / nrow(xreg_results_all), 1), "%)\n\n")
-
-# Movement type breakdown
-movement_breakdown <- xreg_results_all %>%
-  separate(capability, into = c("movement", "quality", "expression"), sep = "_", remove = FALSE) %>%
-  group_by(movement) %>%
-  summarise(
-    n = n(),
-    ts_rmse = round(mean(time_series_rmse), 5),
-    gps_rmse = round(mean(arima_gps_rmse, na.rm = TRUE), 5),
-    hr_rmse = round(mean(arima_hr_rmse, na.rm = TRUE), 5),
-    gps_wins = sum(arima_gps_rmse < time_series_rmse, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-cat("=== RESULTS BY MOVEMENT TYPE ===\n")
-print(movement_breakdown)
-
-##############4.5 again
 
 
 #Part 4.5: ARIMA with ALL GPS/HR External Regressors ====
@@ -544,7 +397,7 @@ test_arima_all_predictors <- function(capability_name) {
   ))
 }
 
-# Run on top 5 capabilities
+# Testing ALL 17 GPS/HR metrics individually
 cat("\n========================================\n")
 cat("Testing ALL 17 GPS/HR metrics individually\n")
 cat("========================================\n\n")
@@ -600,8 +453,12 @@ cat("\nPredictor that won most often:\n")
 print(head(wins_count, 1))
 cat("\nNumber of predictors that beat time series at least once:", nrow(winners), "\n")
 
-#Part 4.6: Combined GPS/HR Model ====
 
+
+
+
+#Part 4.6: Combined GPS/HR Model ====
+##based of amount of wins rather than rmse average....
 test_combined_predictors <- function(capability_name) {
   
   ts_data <- recovery_data %>%
@@ -623,7 +480,7 @@ test_combined_predictors <- function(capability_name) {
   best_ts_rmse <- ts_result$best_rmse
   
   # Best single predictor
-  best_single <- all_predictors_results %>%
+  best_single_er <- all_predictors_results %>%
     filter(capability == capability_name) %>%
     select(gps_dist_27) %>%
     pull()
@@ -631,7 +488,7 @@ test_combined_predictors <- function(capability_name) {
   # Test combined model: Top 3 predictors
   combined_rmse <- tryCatch({
     model <- train %>% model(
-      ARIMA(daily_score ~ distance_over_27 + distance_over_24 + accel_decel_over_4_5)
+      ARIMA(daily_score ~ distance_over_27 + distance_over_24 + distance_over_21)
     )
     forecast_result <- model %>% forecast(new_data = test)
     accuracy(forecast_result, test)$RMSE
@@ -646,12 +503,23 @@ test_combined_predictors <- function(capability_name) {
     accuracy(forecast_result, test)$RMSE
   }, error = function(e) NA)
   
+  #Hr aloine 
+  # Test best HR predictor alone
+  hr_rmse <- tryCatch({
+    model <- train %>% model(
+      ARIMA(daily_score ~ hr_high_intensity)
+    )
+    forecast_result <- model %>% forecast(new_data = test)
+    accuracy(forecast_result, test)$RMSE
+  }, error = function(e) NA)
+    
   return(tibble(
     capability = capability_name,
     time_series = best_ts_rmse,
-    best_single = round(best_single, 5),
+    best_single_er = round(best_single_er, 5),
     combined_gps = round(combined_rmse, 5),
-    combined_gps_hr = round(combined_hr_rmse, 5)
+    combined_gps_hr = round(combined_hr_rmse, 5),
+    combined_hr_alone = round(hr_rmse, 5)
   ))
 }
 
@@ -663,22 +531,56 @@ print(combined_results)
 # Summary
 cat("\n=== COMBINED MODEL RESULTS ===\n")
 cat("Time Series avg:", round(mean(combined_results$time_series), 5), "\n")
-cat("Best Single avg:", round(mean(combined_results$best_single, na.rm = TRUE), 5), "\n")
+cat("Best Single ER avg:", round(mean(combined_results$best_single_er, na.rm = TRUE), 5), "\n")
 cat("Combined GPS avg:", round(mean(combined_results$combined_gps, na.rm = TRUE), 5), "\n")
+cat("Combined HR avg:", round(mean(combined_results$combined_hr_alone, na.rm = TRUE), 5), "\n")
 cat("Combined GPS+HR avg:", round(mean(combined_results$combined_gps_hr, na.rm = TRUE), 5), "\n\n")
 
-cat("Combined GPS better than single:", 
-    sum(combined_results$combined_gps < combined_results$best_single, na.rm = TRUE), 
-    "out of", nrow(combined_results), "\n")
-cat("Combined GPS better than time series:", 
-    sum(combined_results$combined_gps < combined_results$time_series, na.rm = TRUE), 
-    "out of", nrow(combined_results), "\n")
 
+# How many times each model type won (had lowest RMSE)
+model_wins <- combined_results %>%
+  rowwise() %>%
+  mutate(
+    winner = case_when(
+      time_series == min(c(time_series, best_single_er, combined_gps, combined_hr_alone, combined_gps_hr), na.rm = TRUE) ~ "time_series",
+      best_single_er == min(c(time_series, best_single_er, combined_gps, combined_hr_alone, combined_gps_hr), na.rm = TRUE) ~ "single_predictor", 
+      combined_gps == min(c(time_series, best_single_er, combined_gps, combined_hr_alone, combined_gps_hr), na.rm = TRUE) ~ "combined_gps",
+      combined_hr_alone == min(c(time_series, best_single_er, combined_gps, combined_hr_alone, combined_gps_hr), na.rm = TRUE) ~ "combined_hr",
+      combined_gps_hr == min(c(time_series, best_single_er, combined_gps, combined_hr_alone, combined_gps_hr), na.rm = TRUE) ~ "combined_gps_hr"
+    )
+  ) %>%
+  ungroup() %>%
+  count(winner)
+
+print(model_wins)
 ####################
 
 #Part 5 ====
-
+#based of amount of wins rather than rmse average....
 #Part 5 ====
+# Define the top 4 best-performing capabilities (from Part 4 results)
+key_capabilities <- c(
+  "jump_take off_dynamic",
+  "sprint_max velocity_dynamic", 
+  "upper body_push_dynamic",
+  "sprint_acceleration_dynamic"
+)
+
+# Create composite dataset
+composite_data <- recovery_data %>%
+  filter(capability_id %in% key_capabilities) %>%
+  select(date, capability_id, daily_score, match_date, days_post_match) %>%
+  pivot_wider(names_from = capability_id, values_from = daily_score) %>%
+  rowwise() %>%
+  mutate(
+    composite_score = mean(c_across(all_of(key_capabilities)), na.rm = TRUE)
+  ) %>%
+  filter(!is.na(composite_score))
+
+cat("\nComposite readiness dataset created:\n")
+cat("Observations:", nrow(composite_data), "\n")
+
+
 # Create composite time series directly (not using the function)
 composite_ts_data <- composite_data %>%
   left_join(gps_hr_predictors, by = "match_date") %>%
@@ -725,9 +627,216 @@ cat("- GPS predictor RMSE:", round(gps_comp_rmse, 5), "\n")
 cat("- HR predictor RMSE:", round(hr_comp_rmse, 5), "\n")
 
 
+#part 5.5
+
+####Hmm acf, pcaf, augmenting,stl,multi model visual
+##ACF
 
 
-#Part 6: PLots
+
+
+# ACF for composite readiness score
+composite_acf <- composite_ts_data %>%
+  ACF(composite_score, lag_max = 40) %>%
+  autoplot() +
+  labs(title = "Autocorrelation: Composite Physical Readiness",
+       subtitle = "Combined score from top 4 capabilities",
+       x = "Lag (days)")
+
+print(composite_acf)
+
+# PACF
+composite_pacf <- composite_ts_data %>%
+  PACF(composite_score, lag_max = 40) %>%
+  autoplot() +
+  labs(title = "Partial Autocorrelation: Composite Readiness",
+       x = "Lag (days)")
+
+print(composite_pacf)
+
+# Both together - 
+
+grid.arrange(composite_acf, composite_pacf, ncol = 2)
+
+
+
+
+# STL decomposition for composite score
+stl_decomp <- composite_ts_data %>%
+  model(STL(composite_score ~ season(window = 7))) %>%  # 7-day window
+  components()
+
+# Plot decomposition
+stl_plot <- stl_decomp %>%
+  autoplot() +
+  labs(title = "Time Series Decomposition: Composite Physical Readiness",
+       subtitle = "Separating trend, seasonal, and irregular components") +
+  theme_minimal()
+
+print(stl_plot)
+
+
+# Calculate the trend strength
+trend_strength <- stl_decomp %>%
+  as_tibble() %>%
+  summarise(
+    trend_range = max(trend, na.rm = TRUE) - min(trend, na.rm = TRUE),
+    total_range = max(composite_score, na.rm = TRUE) - min(composite_score, na.rm = TRUE),
+    trend_contribution = trend_range / total_range * 100
+  )
+
+print(trend_strength)
+
+
+#=== AUGMENT PLOTS: MODEL FIT QUALITY ===
+
+# 1. Best model for jump takeoff (drift was best, RMSE: 0.00604)
+jump_ts_data <- recovery_data %>%
+  filter(capability_id == "jump_take off_dynamic") %>%
+  left_join(gps_hr_predictors, by = "match_date") %>%
+  arrange(date) %>%
+  complete(date = seq(min(date), max(date), by = "day")) %>%
+  fill(everything(), .direction = "down") %>%
+  filter(!is.na(daily_score)) %>%
+  as_tsibble(index = date)
+
+# Split into train/test
+split_point <- floor(nrow(jump_ts_data) * 0.8)
+train_jump <- jump_ts_data %>% slice(1:split_point)
+test_jump <- jump_ts_data %>% slice((split_point+1):n())
+
+# Fit the best model (drift)
+best_model_jump <- train_jump %>%
+  model(Drift = RW(daily_score ~ drift()))
+
+# Create augment plot - Fitted vs Actual
+augment_plot_jump <- augment(best_model_jump) %>%
+  ggplot(aes(x = date)) +
+  geom_line(aes(y = daily_score, color = "Actual"), size = 1, alpha = 0.7) +
+  geom_line(aes(y = .fitted, color = "Fitted"), size = 1) +
+  scale_color_manual(
+    name = "",
+    values = c("Actual" = "black", "Fitted" = "red")
+  ) +
+  labs(
+    title = "Model Fit Quality: Jump Takeoff Dynamic",
+    subtitle = "Drift model (RMSE: 0.00604) - Training data only",
+    x = "Date",
+    y = "Capability Score (% baseline)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
+  )
+
+print(augment_plot_jump)
+
+
+
+
+# Augment plot with better visibility
+augment_plot_jump_fixed <- augment(best_model_jump) %>%
+  ggplot(aes(x = date)) +
+  # Plot fitted first (background)
+  geom_line(aes(y = .fitted, color = "Fitted"), size = 1.2, alpha = 0.8) +
+  # Plot actual on top with points to make it visible
+  geom_line(aes(y = daily_score, color = "Actual"), size = 0.8, alpha = 0.7) +
+  geom_point(aes(y = daily_score, color = "Actual"), size = 0.5, alpha = 0.3) +
+  scale_color_manual(
+    name = "",
+    values = c("Actual" = "black", "Fitted" = "red")
+  ) +
+  labs(
+    title = "Model Fit Quality: Jump Takeoff Dynamic",
+    subtitle = "Drift model (RMSE: 0.00604) - Training data only",
+    x = "Date",
+    y = "Capability Score (% baseline)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
+  )
+
+print(augment_plot_jump_fixed)
+
+
+
+
+#multi model visual
+# Multi-model comparison for jump takeoff
+multi_model_jump <- train_jump %>%
+  model(
+    Drift = RW(daily_score ~ drift()),
+    ARIMA = ARIMA(daily_score),
+    ETS = ETS(daily_score)
+  )
+# Forecast on test set
+multi_forecast_jump <- multi_model_jump %>%
+  forecast(new_data = test_jump)
+# Accuracy
+multi_accuracy_jump <- multi_forecast_jump %>%
+  accuracy(test_jump) %>%
+  arrange(RMSE)
+print(multi_accuracy_jump)
+# Plot forecasts plus confidence intervals
+multi_forecast_plot <- multi_forecast_jump %>%
+  autoplot(train_jump, level = c(80,95)) +
+  geom_line(data = test_jump, aes(x = date, y = daily_score), color = "black", size = 0.8, alpha = 0.7) +
+  labs(
+    title = "Multi-Model Forecast Comparison: Jump Takeoff Dynamic",
+    subtitle = "Training data + 7-day forecast vs Actual (black line)",
+    x = "Date",
+    y = "Capability Score (% baseline)",
+    color = "Model"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
+  )
+print(multi_forecast_plot)
+
+report(multi_model_jump)
+
+
+
+#they hide each other 
+
+
+multi_forecast_plot <- multi_forecast_jump %>%
+  autoplot(train_jump, level = c(80, 95), alpha = 0.5) +  # transparency for ribbons
+  geom_line(data = test_jump, aes(x = date, y = daily_score),
+            color = "black", size = 0.8, alpha = 0.7) +
+  scale_color_manual(values = c(
+    "ARIMA" = "#E64B35FF", 
+    "Drift" = "#00A087FF", 
+    "ETS" = "#3C5488FF"
+  )) +
+  guides(fill = "none") +
+  labs(
+    title = "Multi-Model Forecast Comparison: Jump Takeoff Dynamic",
+    subtitle = "Training data + 7-day forecast vs Actual (black line)",
+    x = "Date",
+    y = "Capability Score (% baseline)",
+    color = "Model"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
+  )
+print(multi_forecast_plot)
+
+
+
+
+#Part 6: Plots
 
 # Capability distributions by movement type
 capability_dist_plot <- phys_cap %>%
@@ -769,17 +878,22 @@ print(top_capabilities_plot)
 
 
 # Create the key comparison plot showing time series superiority
+results_with_movement <- results_summary %>% separate(capability, into = c("movement", "quality", "expression"), sep = "_", remove = FALSE) %>% arrange(best_rmse) 
+# Top 5 best-performing capabilities (lowest RMSE) 
+top_5_caps <- head(results_with_movement$capability, 5) 
+top_5_caps
+
 # Enhanced comparison plot with TOP 5 CAPABILITIES ONLY
-comparison_plot_top5 <- xreg_results_all %>%
-  # Filter to top 5 capabilities only
+comparison_plot_top5 <- all_predictors_results %>%
   filter(capability %in% top_5_caps) %>%
-  pivot_longer(cols = c(time_series_rmse, arima_gps_rmse, arima_hr_rmse), 
+  select(capability, time_series, gps_dist_27, hr_zones_45) %>%
+  pivot_longer(cols = c(time_series, gps_dist_27, hr_zones_45), 
                names_to = "method", values_to = "rmse") %>%
   mutate(method = case_when(
-    method == "time_series_rmse" ~ "Time Series Only",
-    method == "arima_gps_rmse" ~ "ARIMA + Best GPS", 
-    method == "arima_hr_rmse" ~ "ARIMA + Best HR"
-  )) %>%
+    method == "time_series" ~ "Time Series Only",
+    method == "gps_dist_27" ~ "ARIMA + Best GPS", 
+    method == "hr_zones_45" ~ "ARIMA + Best HR"
+  ))%>%
   mutate(method = factor(method, levels = c("Time Series Only", "ARIMA + Best GPS", "ARIMA + Best HR"))) %>%
   filter(!is.na(rmse)) %>%
   ggplot(aes(x = method, y = rmse)) +
@@ -847,7 +961,7 @@ jump_fit <- jump_example %>%
 jump_forecast <- jump_fit %>%
   forecast(h = 7)
 
-# Plot
+# Plot - should do more here like compare version of models ???
 forecast_plot <- jump_forecast %>%
   autoplot(jump_example) +
   labs(title = "7-Day Capability Score Forecast Example",
@@ -858,23 +972,27 @@ forecast_plot <- jump_forecast %>%
 print(forecast_plot)
 
 
-# Create summary statistics table for presentation
+
+# cvompariosn Create summary ARIMA results 
+top5_summary <- all_predictors_results %>%
+  filter(capability %in% top_5_caps) %>%
+  summarise(
+    time_series_avg = mean(time_series, na.rm = TRUE),
+    gps_best_avg = mean(gps_dist_27, na.rm = TRUE), 
+    hr_best_avg = mean(hr_zones_45, na.rm = TRUE)
+  )
+
 summary_stats <- tibble(
   Method = c("Time Series (Best)", "GPS Predictors", "HR Predictors"),
-  `Average RMSE` = c(round(mean(external_results$best_ts_rmse), 4),
-                     round(mean(external_results$gps_rmse), 4),
-                     round(mean(external_results$hr_rmse), 4)),
+  `Average RMSE` = c(round(top5_summary$time_series_avg, 4),
+                     round(top5_summary$gps_best_avg, 4),
+                     round(top5_summary$hr_best_avg, 4)),
   `Improvement Factor` = c("1.0x (Baseline)", 
-                           paste0(round(mean(external_results$gps_rmse)/mean(external_results$best_ts_rmse), 1), "x worse"),
-                           paste0(round(mean(external_results$hr_rmse)/mean(external_results$best_ts_rmse), 1), "x worse"))
+                           paste0(round(top5_summary$gps_best_avg/top5_summary$time_series_avg, 1), "x worse"),
+                           paste0(round(top5_summary$hr_best_avg/top5_summary$time_series_avg, 1), "x worse"))
 )
 
 print(summary_stats)
-
-
-
-
-
 
 # Composite score time series with all three methods
 composite_comparison <- composite_ts_data %>%
@@ -979,148 +1097,80 @@ print(movement_recovery)
 
 
 
-###ACF TESTING INCLUDE OR NOT? Model diagnostics confirm adequate fit (ACF analysis shows white noise residuals)
-###WEEK 9 teachings 
 
 
 
-# ===================================================================
-# RESIDUAL DIAGNOSTICS USING WORKSHOP 9 METHODS
-# (ACF plots to check for white noise - exactly as taught in class)
-# ===================================================================
 
-library(tidyverse)
-library(fpp3)
 
-# ===================================================================
-# CAPABILITY 1: Jump Take Off Dynamic
-# ===================================================================
 
-# Get residuals from the fitted model
-residuals1 <- augment(best_model1)
 
-# Plot 1: Residuals over time (check for patterns)
-p1 <- residuals1 %>%
-  ggplot(aes(x = date, y = .innov)) +
-  geom_line() +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Jump Take Off: Residuals Over Time",
-       subtitle = "Should look random with no patterns",
-       y = "Residuals", x = "Date") +
-  theme_minimal()
+####powerpoint grpahs 
 
-print(p1)
 
-# Plot 2: ACF of residuals (Workshop 9 method - check for white noise)
-p2 <- residuals1 %>%
-  ACF(.innov) %>%
-  autoplot() +
-  labs(title = "Jump Take Off: ACF of Residuals",
-       subtitle = "If white noise, most bars should be within blue lines") +
-  theme_minimal()
+install.packages("DiagrammeR")
+library(DiagrammeR)
 
-print(p2)
+methodology_diagram <- grViz("
+digraph flowchart {
+  # Node definitions
+  node [fontname = Arial, fontsize = 10, shape = box, style = filled, fillcolor = lightblue]
+  
+  A [label = 'Raw Data\\nCapability Scores']
+  B [label = 'Time Series\\nConversion']
+  C [label = 'Model Fitting\\nNAIVE, Drift, ARIMA, ETS']
+  D [label = 'Forecasting\\n7-day Horizon']
+  E [label = 'Validation\\n80/20 split']
+  
+  # Edge definitions
+  A -> B -> C -> D -> E
+}
+")
 
-# Plot 3: Histogram of residuals (check for normality)
-p3 <- residuals1 %>%
-  ggplot(aes(x = .innov)) +
-  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
-  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Jump Take Off: Histogram of Residuals",
-       subtitle = "Should look roughly bell-shaped",
-       x = "Residuals", y = "Count") +
-  theme_minimal()
+print(methodology_diagram)
 
-print(p3)
 
-# Calculate basic statistics (like Workshop 9)
-cat("\n=== Jump Take Off Dynamic - Residual Statistics ===\n")
-cat("Mean of residuals:", round(mean(residuals1$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
-cat("SD of residuals:", round(sd(residuals1$.innov, na.rm = TRUE), 6), "\n")
-cat("Range:", round(min(residuals1$.innov, na.rm = TRUE), 4), "to", round(max(residuals1$.innov, na.rm = TRUE), 4), "\n\n")
 
-# ===================================================================
-# CAPABILITY 2: Sprint Max Velocity Dynamic
-# ===================================================================
+# Create comparison framework diagram
+framework_data <- data.frame(
+  approach = rep(c("Time Series", "External Predictors"), each = 3),
+  step = rep(c("Input", "Method", "Output"), 2),
+  x = c(1, 1, 1, 2.2, 2.2, 2.2),  # CHANGED: 2.2 instead of 3
+  y = c(3, 2, 1, 3, 2, 1),
+  label = c(
+    "Historical\nCapability Scores", 
+    "NAIVE, Drift\nARIMA, ETS", 
+    "Capability\nForecast",
+    "GPS/HR Data +\nCapability Scores", 
+    "ARIMA with\nExternal Regressors",
+    "Capability\nForecast"
+  )
+)
 
-# Get residuals
-residuals2 <- augment(best_model2)
+comparison_framework <- ggplot(framework_data, aes(x = x, y = y)) +
+  geom_rect(aes(xmin = x - 0.4, xmax = x + 0.4, ymin = y - 0.3, ymax = y + 0.3,
+                fill = approach), alpha = 0.7, color = "black", linewidth = 1) +
+  geom_text(aes(label = label), size = 3.5, fontface = "bold", lineheight = 0.9) +
+  geom_segment(aes(x = x, y = y - 0.3, xend = x, yend = y - 0.7),
+               arrow = arrow(length = unit(0.15, "cm"), type = "closed"), 
+               linewidth = 1, color = "black",
+               data = framework_data[framework_data$step != "Output", ]) +
+  scale_fill_manual(values = c(
+    "External Predictors" = "#FFE8E8",
+    "Time Series" = "#E8F4FD"
+  )) +
+  labs(title = "Forecasting Method Comparison Framework",
+       subtitle = "Pure time series vs ARIMA with GPS/HR external regressors") +
+  xlim(0.3, 2.9) +  # CHANGED: tighter x limits
+  ylim(0.5, 3.5) +
+  theme_void() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 11, hjust = 0.5, color = "gray50"),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
 
-# Plot 1: Residuals over time
-p4 <- residuals2 %>%
-  ggplot(aes(x = date, y = .innov)) +
-  geom_line() +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Sprint Max Velocity: Residuals Over Time",
-       y = "Residuals", x = "Date") +
-  theme_minimal()
+print(comparison_framework)
 
-print(p4)
 
-# Plot 2: ACF of residuals
-p5 <- residuals2 %>%
-  ACF(.innov) %>%
-  autoplot() +
-  labs(title = "Sprint Max Velocity: ACF of Residuals") +
-  theme_minimal()
-
-print(p5)
-
-# Plot 3: Histogram
-p6 <- residuals2 %>%
-  ggplot(aes(x = .innov)) +
-  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
-  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Sprint Max Velocity: Histogram of Residuals",
-       x = "Residuals", y = "Count") +
-  theme_minimal()
-
-print(p6)
-
-cat("\n=== Sprint Max Velocity - Residual Statistics ===\n")
-cat("Mean of residuals:", round(mean(residuals2$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
-cat("SD of residuals:", round(sd(residuals2$.innov, na.rm = TRUE), 6), "\n")
-cat("Range:", round(min(residuals2$.innov, na.rm = TRUE), 4), "to", round(max(residuals2$.innov, na.rm = TRUE), 4), "\n\n")
-
-# ===================================================================
-# CAPABILITY 3: Upper Body Push Dynamic
-# ===================================================================
-
-# Get residuals
-residuals3 <- augment(best_model3)
-
-# Plot 1: Residuals over time
-p7 <- residuals3 %>%
-  ggplot(aes(x = date, y = .innov)) +
-  geom_line() +
-  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Upper Body Push: Residuals Over Time",
-       y = "Residuals", x = "Date") +
-  theme_minimal()
-
-print(p7)
-
-# Plot 2: ACF of residuals
-p8 <- residuals3 %>%
-  ACF(.innov) %>%
-  autoplot() +
-  labs(title = "Upper Body Push: ACF of Residuals") +
-  theme_minimal()
-
-print(p8)
-
-# Plot 3: Histogram
-p9 <- residuals3 %>%
-  ggplot(aes(x = .innov)) +
-  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
-  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
-  labs(title = "Upper Body Push: Histogram of Residuals",
-       x = "Residuals", y = "Count") +
-  theme_minimal()
-
-print(p9)
-
-cat("\n=== Upper Body Push - Residual Statistics ===\n")
-cat("Mean of residuals:", round(mean(residuals3$.innov, na.rm = TRUE), 6), "(should be ≈ 0)\n")
-cat("SD of residuals:", round(sd(residuals3$.innov, na.rm = TRUE), 6), "\n")
-cat("Range:", round(min(residuals3$.innov, na.rm = TRUE), 4), "to", round(max(residuals3$.innov, na.rm = TRUE), 4), "\n\n")
