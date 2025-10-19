@@ -1,16 +1,18 @@
-#part 1 ====
-# Load required libraries
+#Louis Boyd - Assignment 3 - Chelsea Forecast Modeling ====
+#Part 1 ====
+## Load required libraries====
 library(tidyverse)
 library(lubridate)
 library(fpp3)
 library(dplyr)
 
-# Load d# Load d# Load datasets
+## Load datasets ====
 gps <- read_csv("Data/CFC GPS Data.csv")
 phys_cap <- read_csv("Data/CFC Physical Capability Data_.csv")
 recovery <- read_csv("Data/CFC Recovery status Data.csv")
 priority <- read_csv("Data/CFC Individual Priority Areas.csv")
 
+##Data check and clean ====
 # structure check
 glimpse(gps)
 glimpse(phys_cap)
@@ -59,7 +61,7 @@ overlap_matches <- match_days %>%
 nrow(match_days)  # Total matches
 nrow(overlap_matches)  # Matches with capability data available
 
-
+## Visual EDAS ====
 # Capability score distributions by movement type
 p1 <- phys_cap %>%
   ggplot(aes(x = benchmarkPct, fill = movement)) +
@@ -86,8 +88,7 @@ p2 <- overlap_matches %>%
 print(p2)
 
 
-# Document key numbers for Phase 1
-cat("Phase 1 Summary:\n")
+## Part 1 summary ====
 cat("- Total capability observations:", nrow(phys_cap), "\n")
 cat("- Unique capabilities:", n_distinct(phys_cap$capability_id), "\n")
 cat("- Total matches:", nrow(match_days), "\n")
@@ -99,6 +100,7 @@ cat("- Date range:", as.character(min(phys_cap$date)), "to", as.character(max(ph
 
 #Part 2 ====
 
+##Find median gap between matches ====
 # Calculate days between consecutive matches
 match_intervals <- overlap_matches %>%
   arrange(date) %>%
@@ -114,7 +116,8 @@ sum(match_intervals$days_to_next_match <= 4)  # Matches with ≤4 days to next
 
 
 # Function to create post-match recovery windows
-create_recovery_windows <- function(match_date, capability_data, window_days = 3) {
+create_recovery_windows <- function(match_date, capability_data, window_days = 3) 
+{
   capability_data %>%
     filter(date > match_date, date <= (match_date + window_days)) %>%
     mutate(
@@ -124,7 +127,7 @@ create_recovery_windows <- function(match_date, capability_data, window_days = 3
 }
 
 
-# Create daily capability scores
+## Daily capability scores ====
 daily_capability <- phys_cap %>%
   group_by(date, capability_id, movement, quality, expression) %>%
   summarise(daily_score = mean(benchmarkPct), .groups = "drop")
@@ -136,7 +139,7 @@ recovery_data <- map_dfr(1:nrow(overlap_matches), function(i) {
 })
 
 
-# Recovery dataset summary
+## Recovery dataset summary ====
 nrow(recovery_data)
 n_distinct(recovery_data$capability_id)
 n_distinct(recovery_data$match_date)
@@ -164,11 +167,11 @@ recovery_example <- recovery_data %>%
   select(capability_id, days_post_match, daily_score) %>%
   arrange(capability_id, days_post_match)
 
-head(recovery_example, 12)  # Show first 12 rows
+head(recovery_example, 12) 
 
 
 #Part 3 ====
-# Create GPS and HR predictors from overlap matches
+## GPS and HR predictors from overlap matches ====
 gps_hr_predictors <- overlap_matches %>%
   select(date, distance, distance_over_21, distance_over_24, distance_over_27,
          accel_decel_over_2_5, accel_decel_over_3_5, accel_decel_over_4_5,
@@ -185,10 +188,14 @@ gps_hr_predictors <- overlap_matches %>%
   ) %>%
   select(-ends_with("_hms")) %>%
   rename(match_date = date)
+
 # Check predictor summary
 summary(gps_hr_predictors %>% select(distance_over_27, accel_decel_over_3_5, hr_high_intensity))
 
-# Test with jump_take off_dynamic (good data coverage)
+
+##Forecast modelling ====
+
+# Test with jump_take off_dynamic
 test_capability <- "jump_take off_dynamic"
 
 test_ts_data <- recovery_data %>%
@@ -200,13 +207,14 @@ test_ts_data <- recovery_data %>%
   filter(!is.na(daily_score)) %>%
   as_tsibble(index = date)
 
-nrow(test_ts_data)  # Should be around 577 observations
+nrow(test_ts_data)
 
 
 # Function to forecast any capability
-forecast_capability <- function(capability_name) {
+forecast_capability <- function(capability_name) 
+{
   
-  # Create time series data
+# Create time series data
   ts_data <- recovery_data %>%
     filter(capability_id == capability_name) %>%
     left_join(gps_hr_predictors, by = "match_date") %>%
@@ -260,13 +268,12 @@ test_result$best_rmse
 
 
 
-#Part 4 ====
-# Get all capabilities with sufficient data (from recovery_summary)
+#Part 4 Systematic analysis of all capabilities time series ====
 capabilities_to_analyze <- recovery_summary %>%
   filter(n_observations >= 100) %>%
   pull(capability_id)
 
-length(capabilities_to_analyze)  # Should be around 14-15 capabilities
+length(capabilities_to_analyze) 
 
 # Run systematic analysis
 all_results <- map(capabilities_to_analyze, forecast_capability)
@@ -304,19 +311,16 @@ results_with_movement %>%
   pivot_wider(names_from = best_model, values_from = n, values_fill = 0)
 
 
-# Calculate summary statistics
-cat("Phase 4 Results Summary:\n")
+##Summary for part 4 ====
 cat("- Capabilities analyzed:", nrow(results_summary), "\n")
 cat("- Average RMSE:", round(mean(results_summary$best_rmse), 4), "\n")
 cat("- Best capability:", results_with_movement$capability[1], "RMSE:", results_with_movement$best_rmse[1], "\n")
-
-# Model distribution
-model_counts <- table(results_summary$best_model)
+model_counts <- table(results_summary$best_model)# Model distribution
 cat("- Model preferences: Drift =", model_counts["drift"], ", ARIMA =", model_counts["arima"], ", ETS =", model_counts["ets"], "\n")
 
 
 
-#Part 4.5: ARIMA with ALL GPS/HR External Regressors ====
+#Part 5: ARIMA with ALL GPS/HR External Regressors ====
 
 test_arima_all_predictors <- function(capability_name) {
   
@@ -339,7 +343,7 @@ test_arima_all_predictors <- function(capability_name) {
   ts_result <- all_results[[capability_name]]
   best_ts_rmse <- ts_result$best_rmse
   
-  # Helper function to test a predictor
+  # Helper function
   test_predictor <- function(formula_str) {
     tryCatch({
       model <- train %>% model(ARIMA(as.formula(formula_str)))
@@ -363,8 +367,7 @@ test_arima_all_predictors <- function(capability_name) {
   peak_spd <- test_predictor("daily_score ~ peak_speed")
   duration <- test_predictor("daily_score ~ day_duration")
   
-  # Test ALL HR zone metrics (need to convert from hms to minutes first if not already done)
-  # Using the minutes versions you created
+  # Test ALL HR zone metrics
   hr_z1 <- test_predictor("daily_score ~ hr_zone_1_min")
   hr_z2 <- test_predictor("daily_score ~ hr_zone_2_min")
   hr_z3 <- test_predictor("daily_score ~ hr_zone_3_min")
@@ -375,19 +378,19 @@ test_arima_all_predictors <- function(capability_name) {
   return(tibble(
     capability = capability_name,
     time_series = best_ts_rmse,
-    # Distance metrics (4)
+    # Distance metrics 
     gps_total_dist = round(dist_total, 5),
     gps_dist_21 = round(dist_21, 5),
     gps_dist_24 = round(dist_24, 5),
     gps_dist_27 = round(dist_27, 5),
-    # Accel/Decel metrics (3)
+    # Accel/Decel metrics 
     gps_accel_25 = round(accel_25, 5),
     gps_accel_35 = round(accel_35, 5),
     gps_accel_45 = round(accel_45, 5),
-    # Other GPS (2)
+    # Other GPS 
     gps_peak_speed = round(peak_spd, 5),
     gps_duration = round(duration, 5),
-    # ALL HR zones (6)
+    # ALL HR zones 
     hr_zone_1 = round(hr_z1, 5),
     hr_zone_2 = round(hr_z2, 5),
     hr_zone_3 = round(hr_z3, 5),
@@ -398,23 +401,17 @@ test_arima_all_predictors <- function(capability_name) {
 }
 
 # Testing ALL 17 GPS/HR metrics individually
-cat("\n========================================\n")
-cat("Testing ALL 17 GPS/HR metrics individually\n")
-cat("========================================\n\n")
-
 all_predictors_results <- map_dfr(capabilities_to_analyze, test_arima_all_predictors)
 print(all_predictors_results)
 
 # Calculate average RMSE for each predictor
-cat("\n=== AVERAGE RMSE BY PREDICTOR (RANKED) ===\n")
 avg_rmse <- all_predictors_results %>%
   summarise(across(time_series:hr_zones_45, ~mean(., na.rm = TRUE))) %>%
   pivot_longer(everything(), names_to = "predictor", values_to = "avg_rmse") %>%
   arrange(avg_rmse)
 print(avg_rmse)
 
-# Count wins for each predictor
-cat("\n=== HOW MANY TIMES EACH PREDICTOR BEAT TIME SERIES ===\n")
+# Count wins for each predictor - how many times predictor beats time series
 wins_count <- all_predictors_results %>%
   summarise(
     gps_total_dist = sum(gps_total_dist < time_series, na.rm = TRUE),
@@ -439,11 +436,10 @@ wins_count <- all_predictors_results %>%
 print(wins_count)
 
 # Identify the "winners" (predictors that won at least once)
-cat("\n=== PREDICTORS THAT WON AT LEAST ONCE ===\n")
 winners <- wins_count %>% filter(wins > 0)
 print(winners)
 
-cat("\n=== SUMMARY ===\n")
+##Summary for part 5 ====
 cat("Total capabilities tested:", nrow(all_predictors_results), "\n")
 cat("Total predictors tested: 17\n")
 cat("Time Series baseline RMSE:", round(mean(all_predictors_results$time_series), 5), "\n")
@@ -457,7 +453,7 @@ cat("\nNumber of predictors that beat time series at least once:", nrow(winners)
 
 
 
-#Part 4.6: Combined GPS/HR Model ====
+#Part 6: Combined GPS/HR Model ====
 ##based of amount of wins rather than rmse average....
 test_combined_predictors <- function(capability_name) {
   
@@ -523,13 +519,11 @@ test_combined_predictors <- function(capability_name) {
   ))
 }
 
-# Test combined models
-cat("\n=== TESTING COMBINED PREDICTORS ===\n")
+# Test combined predictor models
 combined_results <- map_dfr(capabilities_to_analyze, test_combined_predictors)
 print(combined_results)
 
-# Summary
-cat("\n=== COMBINED MODEL RESULTS ===\n")
+# Summary for part 6 ====
 cat("Time Series avg:", round(mean(combined_results$time_series), 5), "\n")
 cat("Best Single ER avg:", round(mean(combined_results$best_single_er, na.rm = TRUE), 5), "\n")
 cat("Combined GPS avg:", round(mean(combined_results$combined_gps, na.rm = TRUE), 5), "\n")
@@ -553,12 +547,9 @@ model_wins <- combined_results %>%
   count(winner)
 
 print(model_wins)
-####################
 
-#Part 5 ====
-#based of amount of wins rather than rmse average....
-#Part 5 ====
-# Define the top 4 best-performing capabilities (from Part 4 results)
+#Part 7 Composite capability model ====
+# Define the top 4 best-performing capabilities ... based of amount of wins rather than rmse average....
 key_capabilities <- c(
   "jump_take off_dynamic",
   "sprint_max velocity_dynamic", 
@@ -577,7 +568,6 @@ composite_data <- recovery_data %>%
   ) %>%
   filter(!is.na(composite_score))
 
-cat("\nComposite readiness dataset created:\n")
 cat("Observations:", nrow(composite_data), "\n")
 
 
@@ -621,19 +611,13 @@ hr_comp_model <- train_comp %>% model(ARIMA(composite_score ~ hr_high_intensity)
 hr_comp_forecast <- hr_comp_model %>% forecast(new_data = test_comp)
 hr_comp_rmse <- accuracy(hr_comp_forecast, test_comp)$RMSE
 
-cat("Composite Results:\n")
+#  Summary of composite results for part 7 ====
 cat("- Best time series RMSE:", round(comp_accuracy$RMSE[1], 5), "\n")
 cat("- GPS predictor RMSE:", round(gps_comp_rmse, 5), "\n") 
 cat("- HR predictor RMSE:", round(hr_comp_rmse, 5), "\n")
 
 
-#part 5.5
-
-####Hmm acf, pcaf, augmenting,stl,multi model visual
-##ACF
-
-
-
+#Part 8 - Diagnsotics Check..====
 
 # ACF for composite readiness score
 composite_acf <- composite_ts_data %>%
@@ -654,11 +638,7 @@ composite_pacf <- composite_ts_data %>%
 
 print(composite_pacf)
 
-# Both together - 
-
 grid.arrange(composite_acf, composite_pacf, ncol = 2)
-
-
 
 
 # STL decomposition for composite score
@@ -688,8 +668,7 @@ trend_strength <- stl_decomp %>%
 print(trend_strength)
 
 
-#=== AUGMENT PLOTS: MODEL FIT QUALITY ===
-
+# Augment plots
 # 1. Best model for jump takeoff (drift was best, RMSE: 0.00604)
 jump_ts_data <- recovery_data %>%
   filter(capability_id == "jump_take off_dynamic") %>%
@@ -736,38 +715,11 @@ print(augment_plot_jump)
 
 
 
-# Augment plot with better visibility
-augment_plot_jump_fixed <- augment(best_model_jump) %>%
-  ggplot(aes(x = date)) +
-  # Plot fitted first (background)
-  geom_line(aes(y = .fitted, color = "Fitted"), size = 1.2, alpha = 0.8) +
-  # Plot actual on top with points to make it visible
-  geom_line(aes(y = daily_score, color = "Actual"), size = 0.8, alpha = 0.7) +
-  geom_point(aes(y = daily_score, color = "Actual"), size = 0.5, alpha = 0.3) +
-  scale_color_manual(
-    name = "",
-    values = c("Actual" = "black", "Fitted" = "red")
-  ) +
-  labs(
-    title = "Model Fit Quality: Jump Takeoff Dynamic",
-    subtitle = "Drift model (RMSE: 0.00604) - Training data only",
-    x = "Date",
-    y = "Capability Score (% baseline)"
-  ) +
-  theme_minimal(base_size = 13) +
-  theme(
-    legend.position = "top",
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(hjust = 0.5, color = "gray50")
-  )
-
-print(augment_plot_jump_fixed)
-
-
+#Part 9: Plots ====
 
 
 #multi model visual
-# Multi-model comparison for jump takeoff
+# Multi-model comparison for jump takeoff plot 
 multi_model_jump <- train_jump %>%
   model(
     Drift = RW(daily_score ~ drift()),
@@ -806,8 +758,6 @@ report(multi_model_jump)
 
 
 
-
-#Part 6: Plots
 
 # Capability distributions by movement type
 capability_dist_plot <- phys_cap %>%
@@ -932,7 +882,7 @@ jump_fit <- jump_example %>%
 jump_forecast <- jump_fit %>%
   forecast(h = 7)
 
-# Plot - should do more here like compare version of models ???
+# Plot 
 forecast_plot <- jump_forecast %>%
   autoplot(jump_example) +
   labs(title = "7-Day Capability Score Forecast Example",
@@ -1082,26 +1032,7 @@ movement_recovery <- recovery_data %>%
 print(movement_recovery)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-####powerpoint grpahs 
-
-
-install.packages("DiagrammeR")
+#Part 10 - PPT Graphs / tables====
 library(DiagrammeR)
 
 methodology_diagram <- grViz("
@@ -1121,7 +1052,6 @@ digraph flowchart {
 ")
 
 print(methodology_diagram)
-
 
 
 # Create comparison framework diagram
@@ -1170,55 +1100,5 @@ print(comparison_framework)
 
 
 
-
-
-#Part 5.7: MULTIPLE FORECAST EXAMPLES ====
-library(patchwork)
-
-# Function to create forecast for any capability
-create_forecast_viz <- function(cap_name, model_type, h = 7) {
-  
-  ts_data <- recovery_data %>%
-    filter(capability_id == cap_name) %>%
-    left_join(gps_hr_predictors, by = "match_date") %>%
-    arrange(date) %>%
-    complete(date = seq(min(date), max(date), by = "day")) %>%
-    fill(everything(), .direction = "down") %>%
-    filter(!is.na(daily_score)) %>%
-    as_tsibble(index = date)
-  
-  # Fit model
-  fit <- ts_data %>%
-    model(
-      model = if(model_type == "drift") RW(daily_score ~ drift()) 
-      else ARIMA(daily_score)
-    )
-  
-  # Forecast
-  fc <- fit %>% forecast(h = h)
-  
-  # Plot last 60 days + forecast
-  fc %>%
-    autoplot(ts_data %>% filter(date > max(date) - 60), level = c(80, 95)) +
-    labs(title = str_replace_all(cap_name, "_", " ") %>% str_to_title(),
-         subtitle = paste(model_type, "model"),
-         x = "", y = "Score") +
-    theme_minimal(base_size = 10)
-}
-
-# Create 3 examples
-p1 <- create_forecast_viz("jump_take off_dynamic", "drift")
-p2 <- create_forecast_viz("sprint_max velocity_dynamic", "drift") 
-p3 <- create_forecast_viz("agility_deceleration_dynamic", "arima")
-
-# Combine
-combined_forecasts <- (p1 | p2 | p3) +
-  plot_annotation(
-    title = "7-Day Capability Forecasts Across Movement Types",
-    subtitle = "80% and 95% prediction intervals shown",
-    theme = theme(plot.title = element_text(face = "bold", hjust = 0.5))
-  )
-
-print(combined_forecasts)
 
 
